@@ -1,0 +1,54 @@
+{
+ "sh600000": {
+  "name": "浦发银行",
+  "price": 10.42,
+  "prev_close": 10.4,
+  "open": 10.45,
+  "high": 10.74,
+  "low": 10.2,
+  "pct": 0.19,
+  "amount_wan": 52000.0,
+  "volume_shou": 500000,
+  "nmc_yi": 350.0,
+  "time": "20261008103000"
+ },
+ "sz000001": {
+  "name": "平安银行",
+  "price": 8.9,
+  "prev_close": 8.88,
+  "open": 8.95,
+  "high": 9.1,
+  "low": 8.6,
+  "pct": 0.23,
+  "amount_wan": 41000.0,
+  "volume_shou": 460000,
+  "nmc_yi": 120.0,
+  "time": "20261008103000"
+ },
+ "sh600111": {
+  "name": "北方稀土",
+  "price": 25.6,
+  "prev_close": 24.8,
+  "open": 25.0,
+  "high": 26.0,
+  "low": 24.9,
+  "pct": 3.23,
+  "amount_wan": 30000.0,
+  "volume_shou": 120000,
+  "nmc_yi": 80.0,
+  "time": "20261008093000"
+ },
+ "sz000002": {
+  "name": "万科A",
+  "price": 9.3,
+  "prev_close": 9.45,
+  "open": 9.4,
+  "high": 9.42,
+  "low": 9.28,
+  "pct": -1.59,
+  "amount_wan": 20000.0,
+  "volume_shou": 210000,
+  "nmc_yi": 70.0,
+  "time": "20261008093000"
+ }
+}

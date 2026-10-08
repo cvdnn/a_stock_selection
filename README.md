@@ -1,0 +1,157 @@
+# a_stock_selection · A股定盘实时任务
+
+> 技能名：`astock-dingpan-live` ｜ 版本：v3 主线龙头低吸版
+> 内核：`preopen.py`（竞价）→ `watch.py`（盘中）→ `daily.py`（收盘）
+
+按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，保持只读）完整实现「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」的 A 股盘中实时决策链路，按交易时段自动分流，每 10 分钟运行一次。
+
+- 仓库：GitHub `https://github.com/cvdnn/a_stock_selection` ｜ Gitee `https://gitee.com/cvdnn/a_stock_selection`
+- 本目录**既是项目目录也是技能目录**，可直接作为一个完整 skill 安装到各 AI 平台。
+
+---
+
+## 一、特性
+
+- **零依赖**：仅用 Python 3.8+ 标准库，无需 `pip install`。
+- **直连数据源**：腾讯（实时/分时/日K）、新浪（全市场快照/流通市值）、东方财富（板块排行/个股板块/涨停池）。
+- **只出信号不下单**：不接入任何交易接口，符合风控铁律定位。
+- **自带离线样例**：无网络也能用 `--offline` 跑通全流程，便于验证与演示。
+- **跨平台**：hermes / trae / workbuddy / qwenwork 等复制即用。
+
+## 二、目录结构
+
+```
+a_stock_selection/
+├── README.md                # 项目说明与使用方式（本文件）
+├── SKILL.md                 # 技能说明（供 AI 平台识别与路由）
+├── scripts/                 # 核心代码
+│   ├── common.py            # 取数 / 公式 / 配置 / 状态
+│   ├── preopen.py           # 竞价选股内核
+│   ├── watch.py             # 盘中盯盘内核
+│   ├── daily.py             # 收盘复盘内核
+│   └── run.py               # 统一入口（时段分流 + 参数收集）
+├── references/formulas.md   # 公式与阈值速查
+├── assets/                  # 配置/持仓/候选池示例 + sample 离线样例
+├── bin/                     # 启动器 astock-dingpan(.sh/.ps1/.cmd)
+├── output/                  # 运行数据（候选池.txt / config.json / positions.json / 主线存档.json）
+├── log/  temp/              # 日志与中间件
+└── docs/定盘实时任务_公式清单.md   # 原始公式清单（只读）
+```
+
+## 三、环境要求
+
+- Python 3.8 及以上（Windows / macOS / Linux 均可）。
+- 可访问腾讯/新浪/东方财富行情接口的网络（离线模式除外）。
+
+## 四、安装
+
+### 方式 A：让 AI 帮你安装（最简单）
+
+把**本 README 的链接**发给任意支持联网的 AI，并说明目标平台即可，例如：
+
+```
+请阅读 https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md
+（或 Gitee：https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md）
+按其中的安装说明，把该技能安装到 hermes 的技能目录，并执行 selfcheck 校验。
+```
+
+AI 会克隆/复制目录到对应技能目录、按需重命名、并运行 `python scripts/run.py selfcheck` 校验。
+
+### 方式 B：一行命令复制安装（推荐）
+
+把整个项目目录复制到目标平台的技能目录即可完成注册，无需改动代码：
+
+```bash
+# hermes（技能目录为 ~/.hermes/skills/<技能名>/，以 SKILL.md 所在目录名作为技能名）
+git clone https://github.com/cvdnn/a_stock_selection.git ~/.hermes/skills/astock-dingpan-live
+
+# trae（项目级，随仓库走）
+cp -r a_stock_selection <workspace>/.trae/skills/astock-dingpan-live
+
+# workbuddy / qwenwork：复制到各自 skills 目录
+```
+
+```bat
+:: Windows 直接复制
+xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\astock-dingpan-live"
+```
+
+### 校验安装
+
+```bash
+python scripts/run.py selfcheck     # 应显示 skill_root 为安装后的新路径
+```
+
+> 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；hermes 以目录名作为技能名，故复制时按需重命名（建议 `astock-dingpan-live`）。
+
+## 五、使用方式
+
+统一入口 `python scripts/run.py`（或 `bin/astock-dingpan`），工作目录任意。
+
+```bash
+# 每 10 分钟由定时任务执行：按当前时段自动分流
+python scripts/run.py auto
+
+# 调试时可强制指定阶段
+python scripts/run.py auto --stage preopen    # 竞价
+python scripts/run.py auto --stage watch      # 盘中
+python scripts/run.py auto --stage daily      # 收盘
+
+# 结构化输出（便于其他平台二次加工）
+python scripts/run.py auto --json
+
+# 无网络演示
+python scripts/run.py --offline auto --stage watch
+```
+
+### 时段分流
+
+| 时段 | 动作 |
+|---|---|
+| 9:25-9:35 | 竞价选股 + 主线判定 + 龙头排序 + 买点计划（preopen） |
+| 9:35-11:30 / 13:00-15:00 | 盯盘快照 + 买点/卖点信号（watch） |
+| 15:00-15:35 | 数据定格中 |
+| 15:35-23:59 | 收盘复盘 + 次日方向（daily） |
+| 休市（周末或配置节假日） | 一行提示，不跑脚本 |
+
+### 参数收集（Agent 会直接问你）
+
+脚本不假设你知道配置位置。当输出提示缺少参数时，直接在对话里提供数值，由 Agent 落库：
+
+```bash
+# 账户总资金（仓位计算必需）
+python scripts/run.py config set account.total_capital=200000
+
+# 持仓（成本必填；自设止损/目标价可选）
+python scripts/run.py positions add 600519 cost=12.50 stop=11.80 target=15.00 shares=1000
+
+# 候选池板块列回填（供「板块回流」「后排」判定）
+python scripts/run.py pool set 600519 白酒
+
+# 节假日（用于休市判断）
+python scripts/run.py config set calendar.holidays='["2026-10-01","2026-10-02"]'
+
+# 查看
+python scripts/run.py config show
+python scripts/run.py positions list
+python scripts/run.py pool
+```
+
+交互式终端下也可 `python scripts/run.py config init` / `positions add`（不带参数）逐项问答。
+
+## 六、数据与配置
+
+- 运行数据默认写入项目内 `output/`，可用 `--data-dir <目录>` 或环境变量 `DINGPAN_DATA_DIR` 覆盖（技能目录只读时建议指向可写目录）。
+- `output/` 主要文件：`候选池.txt`、`config.json`、`positions.json`、`主线存档.json`。
+- 阈值全部来自 `docs/定盘实时任务_公式清单.md`，可在 `config.json` 的 `thresholds` 中覆盖，无需改代码；速查见 [references/formulas.md](references/formulas.md)。
+
+## 七、已知待确认项
+
+1. **「后排不买」口径**：清单写「现价 < 同板块最强票价 × 0.99」，现按字面比较绝对价格；若原意为「涨幅落后板块最强」需修正公式。
+2. **技能名与目录名**：若目标平台要求 `name` 必须等于目录名，安装后把目录重命名为 profile 中 `name` 一致的值。
+3. **交易日历**：已支持 `calendar.holidays`，法定节假日需自行维护或后续接入交易日历接口。
+4. **数据源**：清单未指定，本项目补为腾讯/新浪/东财直连，接口不可用时明确报错降级，不以缓存冒充实时。
+
+## 八、许可
+
+仅供个人研究与学习使用，不构成任何投资建议。

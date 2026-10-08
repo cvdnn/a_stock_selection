@@ -1,0 +1,28 @@
+{
+  "account": {
+    "total_capital": 200000
+  },
+  "datasource": {
+    "mode": "live"
+  },
+  "calendar": {
+    "holidays": []
+  },
+  "thresholds": {
+    "light": {"red_line_factor": 0.98,
+              "cap": {"green": 1.0, "yellow": 0.5, "red": 0.2},
+              "single": {"green": 0.40, "yellow": 0.20, "red": 0.0},
+              "ma_periods": [5, 10, 20]},
+    "mainline": {"topn": 5, "pct_min": 0.8, "amount_yi": 150.0,
+                 "score_star": 4, "score_watch": 2, "days": 3},
+    "leader": {"zt60_min": 3},
+    "trend": {"zt_pct": 9.5},
+    "buy": {"pct_min": -2.0, "pct_max": 6.0, "pullback_min": 2.0, "pullback_max": 8.0,
+            "vol_shrink": 0.85, "newlow_minutes": 10, "support_vol_ratio": 1.1,
+            "position_vs_prev": 1.5},
+    "exit": {"force": -5.0, "warn": -3.0, "reduce": -2.0, "stop_factor": 0.95},
+    "preopen": {"pct_min": 2.0, "pct_max": 9.5, "price_min": 3.0, "price_max": 50.0,
+                "nmc_min_yi": 30.0, "nmc_max_yi": 400.0, "top": 15, "pool_size": 8},
+    "sentiment": {"continuation": 2.0, "fade": -1.0}
+  }
+}
