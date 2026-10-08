@@ -32,16 +32,29 @@ def _stage_main(name, args):
     return mod.main(argv)
 
 
+def _calendar_hint(args):
+    """临期/到期时在文本输出末尾追加刷新指引（--json 不追加，结构化字段已含）。"""
+    if getattr(args, "json", False):
+        return
+    hint = C.calendar_refresh_hint()
+    if hint:
+        C.out("\n⚠️ " + hint)
+
+
 def cmd_auto(args):
     _global_flags(args)
     stage = args.stage or C.current_stage(cfg=C.load_config())
     if stage == "closed":
         C.out("休市：不运行脚本。")
+        _calendar_hint(args)
         return 0
     if stage == "freeze":
         C.out("数据定格中（15:00-15:35），15:35 后运行收盘复盘。")
+        _calendar_hint(args)
         return 0
-    return _stage_main(stage, args)
+    rc = _stage_main(stage, args)
+    _calendar_hint(args)
+    return rc
 
 
 def cmd_config(args):
@@ -152,6 +165,39 @@ def cmd_pool(args):
     return 0
 
 
+def cmd_calendar(args):
+    _global_flags(args)
+    if getattr(args, "action", "show") == "set":
+        cfg = C.load_config()
+        cal = cfg.setdefault("calendar", {})
+        kvs = {}
+        for t in (args.spec or []):
+            if "=" not in t:
+                raise SystemExit("用法：calendar set holidays='[\"2026-01-01\",...]' "
+                                 "coverage_to=2027-12-31 source=<来源>")
+            k, v = t.split("=", 1)
+            kvs[k.strip()] = v.strip()
+        for k, v in kvs.items():
+            cal[k] = C._coerce(v)
+        if "holidays" in kvs:
+            cal["holidays"] = sorted(set(cal.get("holidays") or []))
+        cal["generated_at"] = datetime.now().strftime("%Y-%m-%d")
+        C.save_config(cfg)
+        C.out("已更新交易日历：覆盖至 %s  休市日 %d 个  来源 %s"
+              % (cal.get("coverage_to"), len(cal.get("holidays") or []), cal.get("source")))
+        return 0
+    st = C.calendar_status()
+    left = st["days_left"] if st["days_left"] is not None else "-"
+    C.out("交易日历：覆盖至 %s  休市日 %d 个  生成 %s  来源 %s  距到期 %s 天"
+          % (st["coverage_to"] or "无", st["holidays"], st["generated_at"] or "-",
+             st["source"] or "-", left),
+          as_json=st if args.json else None)
+    hint = C.calendar_refresh_hint()
+    if hint:
+        C.out("⚠️ " + hint)
+    return 0
+
+
 def cmd_selfcheck(args):
     _global_flags(args)
     cfg = C.load_config()
@@ -167,6 +213,7 @@ def cmd_selfcheck(args):
         "stage_now": C.current_stage(),
         "total_capital": cfg["account"].get("total_capital"),
         "datasource_mode": cfg["datasource"]["mode"],
+        "calendar": C.calendar_status(cfg),
     }
     C.out("自检:", as_json=info if args.json else None)
     if not args.json:
@@ -177,7 +224,7 @@ def cmd_selfcheck(args):
 
 def build_parser():
     g = argparse.ArgumentParser(prog="run.py", description="A股定盘实时任务入口")
-    g.add_argument("--data-dir", help="运行数据目录（默认 ./dingpan_data）")
+    g.add_argument("--data-dir", help="运行数据目录（默认项目内 output/）")
     g.add_argument("--offline", action="store_true", help="使用 assets/sample 离线样例")
     g.add_argument("--json", action="store_true", help="结构化 JSON 输出")
     sub = g.add_subparsers(dest="cmd")
@@ -205,6 +252,12 @@ def build_parser():
     p_pool.add_argument("action", nargs="?", default="show", choices=["show", "set"])
     p_pool.add_argument("spec", nargs="*", help="set 例：pool set 600000 银行")
     p_pool.set_defaults(func=cmd_pool)
+
+    p_cal = sub.add_parser("calendar", help="交易日历（查看/更新）")
+    p_cal.add_argument("action", nargs="?", default="show", choices=["show", "set"])
+    p_cal.add_argument("spec", nargs="*",
+                       help="set 例：holidays='[\"2026-01-01\"]' coverage_to=2027-12-31 source=上交所")
+    p_cal.set_defaults(func=cmd_calendar)
 
     p_sc = sub.add_parser("selfcheck", help="环境自检")
     p_sc.set_defaults(func=cmd_selfcheck)

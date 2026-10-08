@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""astock-dingpan-live 共享库。
+"""a_stock_selection 共享库。
 
 仅使用 Python 标准库，保证在 trae / hermes / workbuddy / qwenwork 等环境直接运行。
 职责：数据获取（腾讯/新浪/东财直连）、公式与指标计算、配置与状态读写、文本输出。
+数据源：仅腾讯/新浪/东财直连；接口不可用时显式记录降级（不静默、不缓存）。
 公式依据：docs/定盘实时任务_公式清单.md（只读，不改动）。
 """
 import os
@@ -17,6 +18,27 @@ from datetime import datetime
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_ROOT, "assets")
 SAMPLE_DIR = os.path.join(ASSETS_DIR, "sample")
+
+# ---------------------------------------------------------------------------
+# 交易日历基线 —— 2026 年，来源：上交所《2026 年休市安排》官方公告。
+# 仅收录"落在工作日"的休市日（共 19 天）；周末由 weekday() 判断覆盖，无需列出。
+# 实际使用以 config.json 的 calendar 为准；此基线用于开箱即用与缺失兜底。
+# ---------------------------------------------------------------------------
+CALENDAR_BASELINE = {
+    "holidays": [
+        "2026-01-01", "2026-01-02",
+        "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23",
+        "2026-04-06",
+        "2026-05-01", "2026-05-04", "2026-05-05",
+        "2026-06-19",
+        "2026-09-25",
+        "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+    ],
+    "coverage_to": "2026-12-31",
+    "generated_at": "2026-10-08",
+    "source": "上交所 2026 年休市安排(sse.com.cn)",
+    "lead_days": 30,
+}
 
 # ---------------------------------------------------------------------------
 # 阈值默认值 —— 全部来自 docs/定盘实时任务_公式清单.md
@@ -44,6 +66,21 @@ DEFAULT_THRESHOLDS = {
 # 运行时开关
 _DATA_DIR = None
 _OFFLINE = False
+
+# 数据源降级记录：接口不可用时显式收集，供各阶段输出与 --json 透出（不静默、不缓存）。
+_DEGRADED = []
+
+
+def note_degraded(source, detail):
+    _DEGRADED.append({"source": source, "detail": str(detail)})
+
+
+def get_degraded():
+    return list(_DEGRADED)
+
+
+def clear_degraded():
+    _DEGRADED.clear()
 
 
 def set_data_dir(path):
@@ -86,7 +123,7 @@ def default_config():
     return {
         "account": {"total_capital": 0},
         "datasource": {"mode": "live"},
-        "calendar": {"holidays": []},
+        "calendar": copy.deepcopy(CALENDAR_BASELINE),
         "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
     }
 
@@ -446,7 +483,7 @@ def fetch_board_rank(limit=80):
 
 
 def fetch_limit_up_pool(date_str=None):
-    """东方财富涨停板股池。返回 [{code,name}]，失败返回 []。"""
+    """东方财富涨停板股池。返回 [{code,name}]；接口不可用时显式降级并返回 []。"""
     if _OFFLINE:
         return _sample("limit_up.json").get(date_str or "today", [])
     d = date_str or datetime.now().strftime("%Y%m%d")
@@ -458,12 +495,13 @@ def fetch_limit_up_pool(date_str=None):
         pool = ((js.get("data") or {}).get("pool")) or []
         return [{"code": normalize_code(str(x.get("c", ""))), "name": x.get("n", "")}
                 for x in pool]
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        note_degraded("东财涨停池", e)
         return []
 
 
 def fetch_stock_sector(code):
-    """东方财富个股所属行业板块名，失败返回 None（由 Agent 用业务知识回填）。"""
+    """东方财富个股所属行业板块名；接口不可用时显式降级并返回 None（由 Agent 用业务知识回填）。"""
     if _OFFLINE:
         return _sample("sector_map.json").get(normalize_code(code))
     try:
@@ -471,8 +509,74 @@ def fetch_stock_sector(code):
                % em_secid(code))
         js = json.loads(http_get(url))
         return (js.get("data") or {}).get("f127")
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        note_degraded("东财个股板块", e)
         return None
+
+
+def fetch_board_members(board_code, limit=400):
+    """东方财富板块成分股。返回 [{code,name,price,pct}]；接口不可用时显式降级并返回 []。"""
+    if _OFFLINE:
+        return _sample("board_members.json").get(board_code, [])
+    try:
+        url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
+               "&fltt=2&invt=2&fid=f3&fs=b:%s&fields=f2,f3,f12,f14" % (limit, board_code))
+        js = json.loads(http_get(url))
+    except Exception as e:  # noqa: BLE001
+        note_degraded("东财板块成分股", e)
+        return []
+    diffs = (js.get("data") or {}).get("diff") or []
+    out = []
+    for d in diffs:
+        try:
+            price = float(d.get("f2") or 0)
+            pct = float(d.get("f3") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append({"code": normalize_code(str(d.get("f12") or "")),
+                    "name": d.get("f14"), "price": price, "pct": pct})
+    return out
+
+
+def resolve_board_code(sector, boards=None):
+    """把板块名解析为东财板块代码：先精确匹配，再包含匹配；无则返回 None。"""
+    if not sector:
+        return None
+    boards = boards if boards is not None else fetch_board_rank(400)
+    for b in boards:
+        if b.get("name") == sector:
+            return b.get("code")
+    for b in boards:
+        if sector in (b.get("name") or ""):
+            return b.get("code")
+    return None
+
+
+def sector_strongest(sector, code, pool=None):
+    """检索同板块最强票（按涨幅最大者的现价）——【后排不买】判据。
+
+    优先检索东财板块成分股；板块无对应或接口不可用时回退候选池同板块。
+    返回最强票的现价(float)；无同板块数据返回 None。
+    """
+    self_code = normalize_code(code)
+    if not sector:
+        return None
+    try:
+        board_code = resolve_board_code(sector)
+        if board_code:
+            members = fetch_board_members(board_code)
+            peers = [m for m in members
+                     if m["code"] != self_code and m.get("price")]
+            if peers:
+                return max(peers, key=lambda m: m.get("pct", 0))["price"]
+    except Exception as e:  # noqa: BLE001
+        note_degraded("东财板块成分股", e)
+    if pool:
+        peers = [p for p in pool
+                 if p.get("sector") == sector and p["code"] != self_code]
+        if peers:
+            return max(peers, key=lambda p: p.get("pct", 0)).get("price")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +871,50 @@ def current_stage(now=None, cfg=None):
 
 
 # ---------------------------------------------------------------------------
+# 交易日历：临期检测与刷新指引（数据由 Agent 联网搜索后经 calendar set 落库）
+# ---------------------------------------------------------------------------
+def calendar_status(cfg=None):
+    """交易日历覆盖状态：coverage_to / days_left / refresh_needed。"""
+    cfg = cfg or load_config()
+    cal = cfg.get("calendar", {}) or {}
+    cov = cal.get("coverage_to") or ""
+    try:
+        lead = int(cal.get("lead_days", CALENDAR_BASELINE["lead_days"]))
+    except (TypeError, ValueError):
+        lead = CALENDAR_BASELINE["lead_days"]
+    days_left, refresh = None, False
+    if cov:
+        try:
+            days_left = (datetime.strptime(cov, "%Y-%m-%d").date() - datetime.now().date()).days
+            refresh = days_left <= lead
+        except ValueError:
+            refresh = True
+    else:
+        refresh = True
+    return {"holidays": len(cal.get("holidays") or []), "coverage_to": cov,
+            "generated_at": cal.get("generated_at"), "source": cal.get("source"),
+            "lead_days": lead, "days_left": days_left, "refresh_needed": refresh}
+
+
+def calendar_refresh_hint(cfg=None):
+    """临期/到期时的刷新指引；无需刷新返回 None。"""
+    st = calendar_status(cfg)
+    if not st["refresh_needed"]:
+        return None
+    try:
+        year = datetime.strptime(st["coverage_to"], "%Y-%m-%d").year + 1
+    except (ValueError, TypeError):
+        year = datetime.now().year + 1
+    left = st["days_left"]
+    when = "已到期" if (left is not None and left < 0) else (
+        "剩 %d 天" % left if left is not None else "未设置覆盖期")
+    return ("交易日历%s（覆盖至 %s）：请联网搜索 %d 年 A股休市安排（沪深北交易所公告），"
+            "再执行 python scripts/run.py calendar set holidays='[...]' "
+            "coverage_to='%d-12-31' source='<来源>' 落库。"
+            % (when, st["coverage_to"] or "无", year, year))
+
+
+# ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
 def out(text, as_json=None):
@@ -779,3 +927,18 @@ def out(text, as_json=None):
 def hr(title=""):
     line = "─" * 40
     return ("\n" + title + "\n" + line) if title else line
+
+
+def degraded_note():
+    """把本次运行收集到的数据源降级汇总成一行；无降级返回 None。"""
+    items = get_degraded()
+    if not items:
+        return None
+    uniq, seen = [], set()
+    for it in items:
+        key = (it["source"], it["detail"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(it)
+    return "⚠️ 数据源降级：" + "；".join(
+        "%s（%s）" % (u["source"], u["detail"]) for u in uniq)

@@ -12,14 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C  # noqa: E402
 
 
-def sector_strongest_price(code, sector, pool):
-    """同板块最强票价（按清单字面：取同板块内涨幅最高者的现价）。"""
-    peers = [p for p in pool if p.get("sector") and p.get("sector") == sector and p["code"] != code]
-    if not peers:
-        return None
-    return max(peers, key=lambda p: p.get("pct", 0)).get("price")
-
-
 def sector_rebound(sector, pool, cfg):
     """买点④板块回流：同板块内 ≥1 只票“近3分钟回升”。"""
     if not sector:
@@ -59,7 +51,8 @@ def eval_candidate(pool_row, pool, light, cfg):
     buy = C.buy_signal(minute, rt, daily, sector_rebound=rebound, cfg=cfg)
     rec["buy"] = buy
 
-    strong = sector_strongest_price(code, rec["sector"], pool)
+    strong = C.sector_strongest(rec["sector"], code, pool) if rec["sector"] else None
+    rec["sector_strongest_price"] = strong
     rec["blocked"] = C.blocked(rt, daily, sector_strongest_price=strong, cfg=cfg)
     return rec
 
@@ -94,6 +87,7 @@ def main(argv=None):
 
     cfg = C.load_config()
     now = datetime.now()
+    C.clear_degraded()
     light = C.market_light(cfg=cfg)
     positions = C.load_positions()
     pool = C.load_pool()
@@ -102,7 +96,8 @@ def main(argv=None):
     pos_recs = [eval_position(p, light, cfg) for p in positions]
 
     result = {"time": now.strftime("%Y-%m-%d %H:%M"), "stage": "watch",
-              "light": light, "candidates": candidates, "positions": pos_recs}
+              "light": light, "candidates": candidates, "positions": pos_recs,
+              "degraded": C.get_degraded()}
 
     if args.json:
         C.out("", as_json=result)
@@ -145,6 +140,9 @@ def main(argv=None):
         else:
             lines.append("  · %s %s  现价 %.2f  持有  止损参考 %.2f"
                          % (r["code"], r["name"], r["price"], r["stop_price"]))
+    note = C.degraded_note()
+    if note:
+        lines.append("\n" + note)
     C.out("\n".join(lines))
     return 0
 

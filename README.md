@@ -1,11 +1,11 @@
 # a_stock_selection · A股定盘实时任务
 
-> 技能名：`astock-dingpan-live` ｜ 版本：v3 主线龙头低吸版
+> 技能名：`a_stock_selection` ｜ 版本：v3 主线龙头低吸版
 > 内核：`preopen.py`（竞价）→ `watch.py`（盘中）→ `daily.py`（收盘）
 
 按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，保持只读）完整实现「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」的 A 股盘中实时决策链路，按交易时段自动分流，每 10 分钟运行一次。
 
-- 仓库：GitHub `https://github.com/cvdnn/a_stock_selection` ｜ Gitee `https://gitee.com/cvdnn/a_stock_selection`
+- 主仓库：Gitee `https://gitee.com/cvdnn/a_stock_selection` ｜ 镜像：GitHub `https://github.com/cvdnn/a_stock_selection`
 - 本目录**既是项目目录也是技能目录**，可直接作为一个完整 skill 安装到各 AI 平台。
 
 ---
@@ -50,8 +50,8 @@ a_stock_selection/
 把**本 README 的链接**发给任意支持联网的 AI，并说明目标平台即可，例如：
 
 ```
-请阅读 https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md
-（或 Gitee：https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md）
+请阅读 https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md
+（或 GitHub：https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md）
 按其中的安装说明，把该技能安装到 hermes 的技能目录，并执行 selfcheck 校验。
 ```
 
@@ -63,17 +63,17 @@ AI 会克隆/复制目录到对应技能目录、按需重命名、并运行 `py
 
 ```bash
 # hermes（技能目录为 ~/.hermes/skills/<技能名>/，以 SKILL.md 所在目录名作为技能名）
-git clone https://github.com/cvdnn/a_stock_selection.git ~/.hermes/skills/astock-dingpan-live
+git clone https://gitee.com/cvdnn/a_stock_selection.git ~/.hermes/skills/a_stock_selection
 
 # trae（项目级，随仓库走）
-cp -r a_stock_selection <workspace>/.trae/skills/astock-dingpan-live
+cp -r a_stock_selection <workspace>/.trae/skills/a_stock_selection
 
 # workbuddy / qwenwork：复制到各自 skills 目录
 ```
 
 ```bat
 :: Windows 直接复制
-xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\astock-dingpan-live"
+xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\a_stock_selection"
 ```
 
 ### 校验安装
@@ -82,11 +82,40 @@ xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\astock-dingpan-live"
 python scripts/run.py selfcheck     # 应显示 skill_root 为安装后的新路径
 ```
 
-> 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；hermes 以目录名作为技能名，故复制时按需重命名（建议 `astock-dingpan-live`）。
+> 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；hermes 以目录名作为技能名，故复制时目录名应与 profile 的 `name`（`a_stock_selection`）一致。
 
 ## 五、使用方式
 
-统一入口 `python scripts/run.py`（或 `bin/astock-dingpan`），工作目录任意。
+本项目主要面向**不懂程序的用户**：无需记忆任何命令，用自然语言告诉 AI 即可，Agent 会自动按交易时段执行并把结论转述给你。
+
+### 5.1 自然语言使用（推荐，面向不懂程序的用户）
+
+装好技能后，直接在对话里说人话即可，例如：
+
+- 「看下现在的大盘红绿灯和主线龙头」
+- 「帮我盯盘，有买点/卖点信号就告诉我」
+- 「竞价阶段选股，给我龙头排序和买点计划」
+- 「收盘复盘，看看明天方向」
+- 「我的账户总资金 20 万」「我持有 600519，成本 12.5，止损 11.8，目标 15」
+- 「把 600519 归到白酒板块」
+
+Agent 会自动完成：按当前时段分流运行 → 参数缺失时在对话里问你 → 落库 → 用自然语言汇报结论。
+
+> 每 10 分钟的定时任务由平台/Agent 配置，你无需手动执行任何命令。若你偏好自己动手（懂程序的用户），见 5.3 进阶用法。
+
+### 5.2 时段分流
+
+| 时段 | 动作 |
+|---|---|
+| 9:25-9:35 | 竞价选股 + 主线判定 + 龙头排序 + 买点计划（preopen） |
+| 9:35-11:30 / 13:00-15:00 | 盯盘快照 + 买点/卖点信号（watch） |
+| 15:00-15:35 | 数据定格中 |
+| 15:35-23:59 | 收盘复盘 + 次日方向（daily） |
+| 休市（周末或配置节假日） | 一行提示，不跑脚本 |
+
+### 5.3 进阶用法（懂程序的用户）
+
+以下命令由 Agent 内部调用，懂程序的用户也可直接执行。统一入口 `python scripts/run.py`（或 `bin/astock-dingpan`），工作目录任意。
 
 ```bash
 # 每 10 分钟由定时任务执行：按当前时段自动分流
@@ -104,19 +133,7 @@ python scripts/run.py auto --json
 python scripts/run.py --offline auto --stage watch
 ```
 
-### 时段分流
-
-| 时段 | 动作 |
-|---|---|
-| 9:25-9:35 | 竞价选股 + 主线判定 + 龙头排序 + 买点计划（preopen） |
-| 9:35-11:30 / 13:00-15:00 | 盯盘快照 + 买点/卖点信号（watch） |
-| 15:00-15:35 | 数据定格中 |
-| 15:35-23:59 | 收盘复盘 + 次日方向（daily） |
-| 休市（周末或配置节假日） | 一行提示，不跑脚本 |
-
-### 参数收集（Agent 会直接问你）
-
-脚本不假设你知道配置位置。当输出提示缺少参数时，直接在对话里提供数值，由 Agent 落库：
+参数落库（脚本不假设你知道配置位置；自然语言使用时由 Agent 代为执行）：
 
 ```bash
 # 账户总资金（仓位计算必需）
@@ -128,8 +145,9 @@ python scripts/run.py positions add 600519 cost=12.50 stop=11.80 target=15.00 sh
 # 候选池板块列回填（供「板块回流」「后排」判定）
 python scripts/run.py pool set 600519 白酒
 
-# 节假日（用于休市判断）
-python scripts/run.py config set calendar.holidays='["2026-10-01","2026-10-02"]'
+# 交易日历（覆盖期临期/到期时，Agent 联网搜索后落库）
+python scripts/run.py calendar show
+python scripts/run.py calendar set holidays='["2027-01-01"]' coverage_to='2027-12-31' source='上交所'
 
 # 查看
 python scripts/run.py config show
@@ -144,13 +162,16 @@ python scripts/run.py pool
 - 运行数据默认写入项目内 `output/`，可用 `--data-dir <目录>` 或环境变量 `DINGPAN_DATA_DIR` 覆盖（技能目录只读时建议指向可写目录）。
 - `output/` 主要文件：`候选池.txt`、`config.json`、`positions.json`、`主线存档.json`。
 - 阈值全部来自 `docs/定盘实时任务_公式清单.md`，可在 `config.json` 的 `thresholds` 中覆盖，无需改代码；速查见 [references/formulas.md](references/formulas.md)。
+- **交易日历**存于 `config.json` 的 `calendar`（`holidays` / `coverage_to` / `generated_at` / `source` / `lead_days`），内置 2026 年沪深北休市安排基线；覆盖期临期（默认 30 天）或到期时各阶段会输出刷新指引，由 Agent 联网搜索下一期后 `calendar set` 落库。
+- **数据源**：仅腾讯/新浪/东财直连；接口不可用时输出「⚠️ 数据源降级」并在 `--json` 的 `degraded` 字段透出，**暂不缓存**，不以旧数据冒充实时。
 
 ## 七、已知待确认项
 
-1. **「后排不买」口径**：清单写「现价 < 同板块最强票价 × 0.99」，现按字面比较绝对价格；若原意为「涨幅落后板块最强」需修正公式。
-2. **技能名与目录名**：若目标平台要求 `name` 必须等于目录名，安装后把目录重命名为 profile 中 `name` 一致的值。
-3. **交易日历**：已支持 `calendar.holidays`，法定节假日需自行维护或后续接入交易日历接口。
-4. **数据源**：清单未指定，本项目补为腾讯/新浪/东财直连，接口不可用时明确报错降级，不以缓存冒充实时。
+1. **「后排不买」口径**：清单写「现价 < 同板块最强票价 × 0.99」，现按字面比较绝对价格；同板块数据优先检索东财板块成分股，无对应板块时回退候选池同板块列。若原意为「涨幅落后板块最强」仍需修正公式（待用户确认）。
+2. **技能名与目录名**：技能名已定为 `a_stock_selection`，安装目录名应与之一致。
+3. **交易日历**：已内置 2026 基线并支持临期自动提示刷新；「自动搜索」由 Agent 联网执行，脚本本身仅检测临期并落库（数据源限定腾讯/新浪/东财，不含日历接口）。
+4. **数据源**：清单未指定，本项目定为腾讯/新浪/东财直连，接口不可用时明确报错降级，暂不缓存。
+5. **盘中「今日」取数时点**：`trend_ok` 与「首阴」判断依赖日 K 末根，盘中日 K 可能不含当日实时，清单未写明取数时点（待确认）。
 
 ## 八、许可
 

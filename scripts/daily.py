@@ -26,6 +26,7 @@ def main(argv=None):
     cfg = C.load_config()
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
+    C.clear_degraded()
 
     light = C.market_light(cfg=cfg)
 
@@ -56,7 +57,7 @@ def main(argv=None):
 
     result = {"time": now.strftime("%Y-%m-%d %H:%M"), "stage": "daily",
               "light": light, "archive_days": used_days, "mainlines": mainlines,
-              "positions": pos_recs, "limit_up": cont}
+              "positions": pos_recs, "limit_up": cont, "degraded": C.get_degraded()}
 
     if args.json:
         C.out("", as_json=result)
@@ -95,6 +96,9 @@ def main(argv=None):
         star = [m["sector"] for m in mainlines if m["level"] == "主线"]
         if star:
             lines.append("  · 主线候选：%s（明日按 龙头三条件 跟踪）" % "、".join(star))
+    note = C.degraded_note()
+    if note:
+        lines.append("\n" + note)
     C.out("\n".join(lines))
     return 0
 

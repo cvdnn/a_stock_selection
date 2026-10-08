@@ -66,6 +66,7 @@ def main(argv=None):
 
     cfg = C.load_config()
     now = datetime.now()
+    C.clear_degraded()
 
     light = C.market_light(cfg=cfg)
     archive = C.load_archive()
@@ -90,7 +91,7 @@ def main(argv=None):
     result = {"time": now.strftime("%Y-%m-%d %H:%M"), "stage": "preopen",
               "light": light, "mainlines": mainlines, "archive_days": used_days,
               "pool": pool, "leaders": leaders, "continuation": cont,
-              "position_plan": plan}
+              "position_plan": plan, "degraded": C.get_degraded()}
 
     if args.json:
         C.out("", as_json=result)
@@ -127,6 +128,9 @@ def main(argv=None):
     else:
         lines.append("\n⚠️ 未配置账户总资金 → 请向用户询问后执行："
                      "run.py config set account.total_capital=<金额>")
+    note = C.degraded_note()
+    if note:
+        lines.append("\n" + note)
     C.out("\n".join(lines))
     return 0
 

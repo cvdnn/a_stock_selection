@@ -1,9 +1,9 @@
 ---
-name: astock-dingpan-live
+name: a_stock_selection
 description: A股定盘实时任务 v3 主线龙头低吸。Use when 用户要求A股盘中盯盘、竞价选股、买点卖点信号、大盘红绿灯或收盘复盘, 或需要每10分钟运行的定时任务。Do not use for 历史回测或实盘下单。
 ---
 
-# astock-dingpan-live — A股定盘实时任务
+# a_stock_selection — A股定盘实时任务
 
 按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，只读）执行「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」链路，并按交易时段自动分流，每 10 分钟运行一次。
 
@@ -16,15 +16,17 @@ description: A股定盘实时任务 v3 主线龙头低吸。Use when 用户要�
 
 不适用：历史回测、实盘下单（本技能只出信号，不接入任何交易接口）。
 
-## 执行入口
+## 使用方式
 
-统一入口 `python scripts/run.py`（工作目录任意）；定时任务每次执行：
+本技能面向**不懂程序的用户**：用户用自然语言提出需求，Agent 负责执行脚本并把结论转述回去，用户无需接触任何命令。
 
-```bash
-python scripts/run.py auto     # 按当前时段自动分流
-```
+### 自然语言使用（主）
 
-调试可强制阶段：`auto --stage preopen|watch|daily`。
+用户只需说人话，例如「看下大盘红绿灯和主线」「帮我盯盘，有买点/卖点信号就提示我」「竞价阶段选股」「收盘复盘，看看明天方向」，以及直接给出账户总资金、持仓成本/自设止损/目标价等数值。
+
+Agent 收到后的动作：按当前时段自动分流执行 → 参数缺失时直接向用户询问 → 落库 → 用自然语言输出结论。定时任务每 10 分钟触发一次（由平台/Agent 配置）。
+
+### 时段分流
 
 | 时段 | 动作 |
 |---|---|
@@ -33,6 +35,16 @@ python scripts/run.py auto     # 按当前时段自动分流
 | 15:00-15:35 | 数据定格中 |
 | 15:35-23:59 | 收盘复盘 + 次日方向 |
 | 休市（周末或配置节假日） | 一行提示，不跑脚本 |
+
+### 进阶用法（懂程序的用户）
+
+以下命令由 Agent 内部调用，懂程序的用户也可直接执行。统一入口 `python scripts/run.py`（工作目录任意）：
+
+```bash
+python scripts/run.py auto     # 按当前时段自动分流
+```
+
+调试可强制阶段：`auto --stage preopen|watch|daily`。
 
 ## 固定动作（铁律）
 
@@ -43,16 +55,25 @@ python scripts/run.py auto     # 按当前时段自动分流
 5. **三不买自动拦截**：首阴、破位、后排。
 6. **风控铁律**：浮亏≤-5% 无条件离场；≤-3% 预警；≤-2% 且非绿灯先减半仓。
 7. **只出信号不下单**。
+8. **【后排不买】检索同板块**：脚本优先检索东财板块成分股求"同板块最强票"现价，无对应板块时回退候选池同板块列。
+9. **交易日历临期自动刷新**：每次运行检测 `output/config.json` 的 `calendar` 覆盖期；临期（默认 30 天）/到期时输出刷新指引 → Agent **联网搜索下一期 A股休市安排**并用 `run.py calendar set` 落库（不写入清单）。
+
+## 数据源
+
+- 仅 **腾讯 / 新浪 / 东财** 直连（腾讯：实时/分时/日K；新浪：全市场快照/流通市值；东财：板块排行/成分股/个股板块/涨停池）。
+- 接口不可用时**显式降级**：输出"⚠️ 数据源降级：<来源>（<原因>）"，`--json` 的 `degraded` 字段透出；**暂不缓存**，不以任何旧数据冒充实时。
+- `--offline` 仅用于演示与验证，读取 `assets/sample/` 样例，非实时缓存。
 
 ## 参数缺失时先问用户
 
-脚本不假设用户知道配置位置。当输出提示缺少「总资金 / 持仓成本 / 自设止损 / 目标价」时，直接在对话中向用户询问数值，然后由 Agent 落库：
+脚本不假设用户知道配置位置。当输出提示缺少「总资金 / 持仓成本 / 自设止损 / 目标价」时，Agent **用自然语言在对话中向用户询问数值**，用户只需回答数值，由 Agent 落库（以下命令为 Agent 内部调用，懂程序的用户也可直接执行）：
 
 ```bash
 python scripts/run.py config set account.total_capital=200000
 python scripts/run.py positions add 600519 cost=12.50 stop=11.80 target=15.00 shares=1000
 python scripts/run.py pool set 600519 白酒          # 回填候选池板块列
-python scripts/run.py config set calendar.holidays='["2026-10-01"]'
+python scripts/run.py calendar show                # 查看交易日历覆盖/临期状态
+python scripts/run.py calendar set holidays='["2027-01-01"]' coverage_to='2027-12-31' source='上交所'
 ```
 
 ## 输出
