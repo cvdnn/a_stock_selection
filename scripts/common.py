@@ -440,6 +440,39 @@ def fetch_daily(code, count=120):
     return out
 
 
+def _rt_date(rt):
+    """从实时行情 time 字段取当日日期（YYYY-MM-DD）；缺失时回退系统日期。"""
+    m = re.match(r"(\d{4})(\d{2})(\d{2})", str((rt or {}).get("time") or ""))
+    return "%s-%s-%s" % m.groups() if m else datetime.now().strftime("%Y-%m-%d")
+
+
+def splice_today(daily, rt):
+    """把当日实时拼接到日K，使末根代表"今日"（盘中当日 bar 可能缺失/不完整）。
+
+    末根若已是今日则用实时覆盖 close/high/low/pct，否则追加一根今日 bar。
+    返回新列表，不修改入参。供 trend_ok（MA5今/昨、zt5）与 blocked（首阴"昨日涨幅"）统一取数。
+    """
+    if not rt:
+        return list(daily)
+    today = _rt_date(rt)
+    close = rt.get("price") or rt.get("prev_close") or 0
+    if not close:
+        return list(daily)
+    pct = rt.get("pct")
+    if pct is None:
+        prev_close = rt.get("prev_close") or 0
+        pct = (close / prev_close - 1) * 100 if prev_close else 0.0
+    bar = {"date": today, "open": rt.get("open") or close, "close": close,
+           "high": rt.get("high") or close, "low": rt.get("low") or close,
+           "volume": rt.get("volume_shou") or 0, "pct": float(pct)}
+    out = list(daily)
+    if out and out[-1].get("date") == today:
+        out[-1] = bar
+    else:
+        out.append(bar)
+    return out
+
+
 def fetch_sina_spot_all(pages=6, num=100, sort="changepercent"):
     """新浪全市场快照，返回原始 dict 列表（含 nmc 万元、changepercent 等）。"""
     if _OFFLINE:
@@ -755,8 +788,11 @@ def blocked(rt, daily, sector_strongest_price=None, cfg=None):
     prev_close = rt.get("prev_close", 0)
     closes = [d["close"] for d in daily]
     ma10 = ma(closes, 10)
-    if daily:
-        y_pct = daily[-1].get("pct", 0)
+    # 首阴用"昨日涨幅"：daily 末根可能是拼接的今日 bar，故剔除今日取最后一根完整日K。
+    today = _rt_date(rt)
+    past = [d for d in daily if d.get("date") != today]
+    if past:
+        y_pct = past[-1].get("pct", 0)
         if y_pct >= thresholds(cfg)["trend"]["zt_pct"] and prev_close and price < prev_close * 0.99:
             hits.append("首阴不买")
     if ma10 and price < ma10:

@@ -40,8 +40,17 @@ def eval_candidate(pool_row, pool, light, cfg):
 
     rec["price"] = rt.get("price")
     rec["pct"] = rt.get("pct")
+    # 拼接当日实时，使 trend_ok 的 MA5今/昨、zt5 与 blocked 的首阴取数落在"今日"。
+    daily = C.splice_today(daily, rt)
     trend = C.trend_ok(daily, rt.get("price") or 0, cfg)
     rec["trend"] = trend
+
+    # 缺板块时自动识别（复用东财个股板块），保证「后排」「板块回流」可按同板块评估。
+    if not rec["sector"]:
+        try:
+            rec["sector"] = C.fetch_stock_sector(code) or ""
+        except Exception:  # noqa: BLE001
+            rec["sector"] = ""
 
     rebound = sector_rebound(rec["sector"], pool, cfg) if rec["sector"] else False
     try:
