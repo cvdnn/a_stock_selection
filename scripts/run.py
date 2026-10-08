@@ -201,6 +201,18 @@ def cmd_calendar(args):
 def cmd_selfcheck(args):
     _global_flags(args)
     cfg = C.load_config()
+    formula = C.formula_list_check()
+    baseline = getattr(args, "baseline", None)
+    diff = C.formula_list_diff(baseline) if baseline else None
+
+    doc_ok = formula["exists"] and formula["readable"]
+    if not doc_ok:
+        reason = "formula_list_missing_or_unreadable"
+    elif diff is not None and not diff["consistent"]:
+        reason = "baseline_mismatch"
+    else:
+        reason = None
+
     info = {
         "python": sys.version.split()[0],
         "skill_root": C.SKILL_ROOT,
@@ -214,12 +226,42 @@ def cmd_selfcheck(args):
         "total_capital": cfg["account"].get("total_capital"),
         "datasource_mode": cfg["datasource"]["mode"],
         "calendar": C.calendar_status(cfg),
+        "formula_list": formula,
+        "verify": {"ok": reason is None, "reason": reason},
     }
+    if diff is not None:
+        info["formula_list_diff"] = diff
+
     C.out("自检:", as_json=info if args.json else None)
     if not args.json:
         for k, v in info.items():
+            if k in ("formula_list", "formula_list_diff", "verify"):
+                continue
             C.out("  %-16s %s" % (k, v))
-    return 0
+        C.out("  公式清单         %s" % ("存在" if formula["exists"] else "缺失"))
+        C.out("    path           %s" % formula["path"])
+        C.out("    version        %s" % (formula["version"] or "-"))
+        C.out("    lines          %s" % formula["lines"])
+        C.out("    sha256         %s" % (formula["sha256"] or "-"))
+        C.out("    sections       %d 节" % len(formula["sections"]))
+        if diff is not None:
+            C.out("  清单比对(基线 %s):" % baseline)
+            C.out("    版本(基线/项目) %s / %s"
+                  % (diff["baseline_version"] or "-", diff["project_version"] or "-"))
+            C.out("    仅环境有(项目缺) %s" % ("、".join(diff["removed_sections"]) or "无"))
+            C.out("    仅项目有        %s" % ("、".join(diff["added_sections"]) or "无"))
+            C.out("    取值不同        %s" % ("、".join(diff["changed_sections"]) or "无"))
+            C.out("    结论            %s" % ("一致" if diff["consistent"] else "不一致"))
+        # 安装后自动校验结论（文本模式；--json 由 verify 字段透出）
+        if reason == "formula_list_missing_or_unreadable":
+            C.out("\n✗ 公式清单缺失或不可读：%s\n  安装不完整，请重新复制完整项目（含 docs/）。"
+                  % formula["path"])
+        elif reason == "baseline_mismatch":
+            C.out("\n✗ 清单与安装环境基线不一致，当前项目可能不满足用户选股需求。\n"
+                  "  请把差异反馈给管理员或开发者，升级项目后再安装。")
+        else:
+            C.out("\n✓ 安装后校验通过。")
+    return 0 if reason is None else 1
 
 
 def build_parser():
@@ -259,7 +301,8 @@ def build_parser():
                        help="set 例：holidays='[\"2026-01-01\"]' coverage_to=2027-12-31 source=上交所")
     p_cal.set_defaults(func=cmd_calendar)
 
-    p_sc = sub.add_parser("selfcheck", help="环境自检")
+    p_sc = sub.add_parser("selfcheck", help="环境自检（含公式清单校验）")
+    p_sc.add_argument("--baseline", help="安装环境已有公式清单路径，用于一致性比对")
     p_sc.set_defaults(func=cmd_selfcheck)
     return g
 

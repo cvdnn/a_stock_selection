@@ -11,6 +11,7 @@ import re
 import sys
 import json
 import copy
+import hashlib
 import urllib.request
 import urllib.parse
 from datetime import datetime
@@ -18,6 +19,8 @@ from datetime import datetime
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_ROOT, "assets")
 SAMPLE_DIR = os.path.join(ASSETS_DIR, "sample")
+# 唯一公式依据（只读）；selfcheck 用它做安装后校验与基线比对。
+FORMULA_DOC = os.path.join(SKILL_ROOT, "docs", "定盘实时任务_公式清单.md")
 
 # ---------------------------------------------------------------------------
 # 交易日历基线 —— 2026 年，来源：上交所《2026 年休市安排》官方公告。
@@ -948,6 +951,80 @@ def calendar_refresh_hint(cfg=None):
             "再执行 python scripts/run.py calendar set holidays='[...]' "
             "coverage_to='%d-12-31' source='<来源>' 落库。"
             % (when, st["coverage_to"] or "无", year, year))
+
+
+# ---------------------------------------------------------------------------
+# 公式清单校验（安装后自动校验 / 与安装环境基线比对）
+# ---------------------------------------------------------------------------
+def _read_text(path):
+    with open(path, "rb") as f:
+        return f.read().decode("utf-8")
+
+
+def _parse_sections(text):
+    """按 `## ` 二级标题切分章节，返回 {标题: 正文}；摘要（标题前内容）忽略。"""
+    sections, cur, buf = {}, None, []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if cur is not None:
+                sections[cur] = "\n".join(buf).strip()
+            cur = line[3:].strip()
+            buf = []
+        elif cur is not None:
+            buf.append(line)
+    if cur is not None:
+        sections[cur] = "\n".join(buf).strip()
+    return sections
+
+
+def _extract_version(text):
+    m = re.search(r"公式清单（(v[^）]+)）", text)
+    return m.group(1) if m else None
+
+
+def formula_list_check(path=None):
+    """检查一份公式清单是否存在/可读，并给出指纹（版本/行数/章节/sha256）。"""
+    path = path or FORMULA_DOC
+    info = {"path": path, "exists": False, "readable": False,
+            "version": None, "lines": 0, "sha256": None, "sections": []}
+    if not os.path.exists(path):
+        return info
+    info["exists"] = True
+    try:
+        raw = open(path, "rb").read()
+        text = raw.decode("utf-8")
+    except Exception:
+        return info
+    info["readable"] = True
+    info["version"] = _extract_version(text)
+    info["lines"] = text.count("\n") + 1
+    info["sha256"] = hashlib.sha256(raw).hexdigest()
+    info["sections"] = list(_parse_sections(text).keys())
+    return info
+
+
+def formula_list_diff(baseline_path, project_path=None):
+    """比对「安装环境基线清单」与「项目自带清单」，按章节给出差异。
+
+    口径：环境基线 = 用户期望/基线依据；项目清单 = 当前实现依据。
+    """
+    project_path = project_path or FORMULA_DOC
+    b, p = formula_list_check(baseline_path), formula_list_check(project_path)
+    res = {"baseline": baseline_path, "project": project_path,
+           "baseline_version": b["version"], "project_version": p["version"],
+           "consistent": False, "added_sections": [], "removed_sections": [],
+           "changed_sections": [], "unchanged_sections": []}
+    if not (b["exists"] and b["readable"] and p["exists"] and p["readable"]):
+        return res
+    bs, ps = _parse_sections(_read_text(baseline_path)), _parse_sections(_read_text(project_path))
+    norm = lambda s: re.sub(r"\s+", "", s)
+    res["added_sections"] = [k for k in ps if k not in bs]       # 仅项目有
+    res["removed_sections"] = [k for k in bs if k not in ps]     # 仅环境有（项目缺）
+    res["changed_sections"] = [k for k in bs if k in ps and norm(bs[k]) != norm(ps[k])]
+    res["unchanged_sections"] = [k for k in bs if k in ps and norm(bs[k]) == norm(ps[k])]
+    res["consistent"] = not (res["added_sections"] or res["removed_sections"]
+                             or res["changed_sections"])
+    return res
 
 
 # ---------------------------------------------------------------------------

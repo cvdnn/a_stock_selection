@@ -52,7 +52,8 @@ a_stock_selection/
 ```
 请阅读 https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md
 （或 GitHub：https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md）
-按其中的安装说明，把该技能安装到 hermes 的技能目录，并执行 selfcheck 校验。
+按其中的安装说明，先做「安装前一致性评估」，再把该技能安装到 WorkBuddy 的技能目录，
+并执行 selfcheck 校验。
 ```
 
 AI 会克隆/复制目录到对应技能目录、按需重命名、并运行 `python scripts/run.py selfcheck` 校验。
@@ -76,10 +77,26 @@ cp -r a_stock_selection <workspace>/.trae/skills/a_stock_selection
 xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\a_stock_selection"
 ```
 
+### 安装前一致性评估（推荐）
+
+> 目的：比对**安装环境已有清单**（用户期望/基线）与**本项目自带清单**（当前实现依据），避免安装后不满足用户选股需求。两份清单均只读。
+
+```text
+安装前一致性评估（推荐先做）：
+1) 在目标平台技能目录查找已存在的 `docs/定盘实时任务_公式清单.md`（找不到=全新安装）。
+2) 读取本仓库同名清单，按 10 节逐项比对阈值（红绿灯/主线/龙头/趋势/买点四件套/三不买/卖点/仓位/竞价/时段）与版本标识。
+3) 一致→正常安装并执行 `python scripts/run.py selfcheck --baseline <环境清单路径>`（自动校验，非 0 即不通过）；环境基线有而项目缺→提示用户联系管理员/开发者升级项目；项目更新→提示环境侧同步升级；仅措辞差异→放行。
+4) 输出【安装评估报告】：平台 / 环境清单(路径|有否|版本) / 项目清单(版本) / 差异明细 / 结论 / 建议动作 / selfcheck 结果。
+清单只读；`selfcheck` 会自动校验清单存在性与版本指纹，加 `--baseline <环境清单路径>` 可做一致性比对（不一致时非 0 退出）。
+```
+
 ### 校验安装
 
+安装后 `selfcheck` 会自动校验：`skill_root` 路径、公式清单是否存在/可读（版本、行数、sha256、章节数）。清单缺失或不可读时**非 0 退出**。
+
 ```bash
-python scripts/run.py selfcheck     # 应显示 skill_root 为安装后的新路径
+python scripts/run.py selfcheck                                   # 基础校验，应显示 skill_root 为安装后的新路径
+python scripts/run.py selfcheck --baseline /path/to/环境清单.md    # 追加与安装环境基线清单的一致性比对；不一致则非 0 退出
 ```
 
 > 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；hermes 以目录名作为技能名，故复制时目录名应与 profile 的 `name`（`a_stock_selection`）一致。
