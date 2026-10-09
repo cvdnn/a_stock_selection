@@ -54,13 +54,14 @@ a_stock_selection/
 请阅读 https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md
 （GitHub 镜像：https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md）
 按其中「四、安装 → 方式 A」把 a-stock-selection 技能安装到 WorkBuddy 的技能目录：
-1) 先做「安装前一致性评估」（比对本环境已有清单与项目清单），输出评估报告；
-2) 安装时保留我现有的 output/ 使用记录，不要覆盖（如已存在请先备份）；
-3) 技能目录名使用 a-stock-selection（与 SKILL.md 的 name 一致；工程仓库名仍为 a_stock_selection）；
-4) 安装后执行 python scripts/run.py selfcheck 校验并汇报结果。
+1) 先做「安装前现有技能检索分析」（按公式清单内容匹配，非名称）：同名→就地升级/复用；异名但内容匹配→装入该技能之下并遵循其规范、不改其既有文件；冲突→先问我覆盖还是独立安装；
+2) 再做「安装前一致性评估」（比对本环境已有清单与项目清单），输出评估报告；
+3) 安装时保留我现有的 output/ 使用记录，不要覆盖（如已存在请先备份）；
+4) 技能目录名使用 a-stock-selection（与 SKILL.md 的 name 一致；工程仓库名仍为 a_stock_selection）；
+5) 安装后执行 python scripts/run.py selfcheck 校验并汇报结果。
 ```
 
-AI 会：读取 README → 按下方「文件复制位置与目录规范」复制技能本体（**保留 `output/`**）→ 运行 `python scripts/run.py selfcheck` 校验 → 输出【安装评估报告】。
+AI 会：读取 README → **先做「安装前现有技能检索分析」**（按清单内容判定升级/宿主挂载/独立安装并遵循现有技能规范）→ 按下方「文件复制位置与目录规范」复制技能本体（**保留 `output/`**）→ 运行 `python scripts/run.py selfcheck` 校验 → 输出【安装评估报告】。
 
 ### 方式 B：一行命令复制安装
 
@@ -114,6 +115,8 @@ cp -r /tmp/a_stock_selection_rel/a_stock_selection*/ <WorkBuddy技能目录>/a-s
 | `log/`、`temp/`、`scripts/__pycache__/` | **不复制** | 运行时目录 / 中间产物 |
 
 > 技能目录路径由 AI 自动检索；无权限或无法获取时提示用户确认或输入。`docs/` 内除公式清单外的文档（如本「交付设计」）为维护者资料，可选是否随技能包分发。
+>
+> **检索命中例外**：若「安装前现有技能检索分析」判定为**异名宿主挂载**，则以宿主技能的目录规范为准，本技能装入其下，只新增文件、不改宿主既有文件。
 
 **Skill 目录规范（Agent Skills 标准，WorkBuddy 遵循）**：
 
@@ -125,6 +128,21 @@ a-stock-selection/                    # 技能目录名＝技能名（kebab-case
 ```
 
 > 合规：`SKILL.md` 位于技能目录根、`name: a-stock-selection` 与技能目录名一致（kebab-case）、资源目录齐备。工程仓库名 `a_stock_selection` 保持不变，仅技能名与安装后技能目录名使用 `a-stock-selection`。
+
+### 安装前现有技能检索分析（推荐先做）
+
+> 目的：先摸清目标环境已有哪些**涉及清单文件**的技能/智能体，据此决定安装方式，避免产生平行重复副本。**以公式清单内容语义匹配，非文件名/技能名比对**——用户环境可能存在与本项目不同的文件名（如 `formula.md`/`公式清单.md`/`清单.txt`）。
+
+```text
+安装前现有技能检索分析（推荐先做）：
+1) 遍历目标平台技能目录，逐个读取现有技能/智能体，识别是否"涉及清单文件"——存在与项目 docs/定盘实时任务_公式清单.md 内容同源/一致的公式清单文件（文件名可能不同），按章节与阈值语义比对，不得只按文件名或技能名判定。
+2) 命中处理三选一：
+   · 同名技能（目录名/SKILL.md 的 name 与本项目 a-stock-selection 一致）→ 就地升级/复用该技能，不另复制平行副本；
+   · 异名技能/智能体但清单内容匹配 → 装入该现有技能之下，遵循该现有技能的目录规范，只新增本技能文件、不改其既有文件；
+   · 冲突（异名技能已占用同名文件或目录规范不兼容）→ 先问用户二选一：①覆盖该现有技能；②独立安装为项目规定的技能名 a-stock-selection。
+3) 无命中 → 全新安装为 a-stock-selection。
+4) 结果记入【安装评估报告】：命中技能 / 判定（升级|宿主挂载|独立安装）/ 遵循的目录规范 / 是否改动宿主文件。
+```
 
 ### 安装前一致性评估（推荐）
 
