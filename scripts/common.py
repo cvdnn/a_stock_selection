@@ -62,7 +62,8 @@ DEFAULT_THRESHOLDS = {
             "position_vs_prev": 1.5},
     "exit": {"force": -5.0, "warn": -3.0, "reduce": -2.0, "stop_factor": 0.95},
     "preopen": {"pct_min": 2.0, "pct_max": 9.5, "price_min": 3.0, "price_max": 50.0,
-                "nmc_min_yi": 30.0, "nmc_max_yi": 400.0, "top": 15, "pool_size": 8},
+                "nmc_min_yi": 30.0, "nmc_max_yi": 400.0, "top": 15, "pool_size": 8,
+                "board_main_only": False},  # 仅主板过滤：默认关闭，与公式清单默认行为一致
     "sentiment": {"continuation": 2.0, "fade": -1.0},
 }
 
@@ -1494,6 +1495,13 @@ def preopen_filter(rows, cfg=None, exclude_bj=True):
             continue
         if exclude_bj and (is_bj(code) or code[2:].startswith(("4", "8", "92"))):
             continue
+        # 可选：仅主板（沪主板 sh60* / 深主板 sz00*），自动排除创业板 sz30* 与科创板 sh68*
+        if th.get("board_main_only"):
+            body = code[2:]
+            is_main = (code[:2] == "sh" and body.startswith("60")) \
+                      or (code[:2] == "sz" and body.startswith("00"))
+            if not is_main:
+                continue
         if not (th["pct_min"] <= pct <= th["pct_max"]):
             continue
         if not (th["price_min"] <= price <= th["price_max"]):
