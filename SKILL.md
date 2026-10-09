@@ -1,9 +1,9 @@
 ---
-name: a_stock_selection
+name: a-stock-selection
 description: A股定盘实时任务 v3 主线龙头低吸。Use when 用户要求A股盘中盯盘、竞价选股、买点卖点信号、大盘红绿灯或收盘复盘, 或需要每10分钟运行的定时任务。Do not use for 历史回测或实盘下单。
 ---
 
-# a_stock_selection — A股定盘实时任务
+# a-stock-selection — A股定盘实时任务
 
 按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，只读）执行「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」链路，并按交易时段自动分流，每 10 分钟运行一次。
 

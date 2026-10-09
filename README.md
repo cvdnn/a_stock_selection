@@ -1,12 +1,12 @@
 # a_stock_selection · A股定盘实时任务
 
-> 技能名：`a_stock_selection` ｜ 版本：v3 主线龙头低吸版
+> 技能名：`a-stock-selection` ｜ 工程名：`a_stock_selection` ｜ 版本：v3 主线龙头低吸版
 > 内核：`preopen.py`（竞价）→ `watch.py`（盘中）→ `daily.py`（收盘）
 
 按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，保持只读）完整实现「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」的 A 股盘中实时决策链路，按交易时段自动分流，每 10 分钟运行一次。
 
 - 主仓库：Gitee `https://gitee.com/cvdnn/a_stock_selection` ｜ 镜像：GitHub `https://github.com/cvdnn/a_stock_selection`
-- 本目录**既是项目目录也是技能目录**，可直接作为一个完整 skill 安装到各 AI 平台。
+- 本目录**既是工程仓库、也是技能包来源**，可直接作为一个完整 skill 安装到各 AI 平台（安装后技能目录名 `a-stock-selection`；工程仓库名 `a_stock_selection` 不变）。
 
 ---
 
@@ -16,7 +16,7 @@
 - **直连数据源**：腾讯（实时/分时/日K）、新浪（全市场快照/流通市值）、东方财富（板块排行/个股板块/涨停池）。
 - **只出信号不下单**：不接入任何交易接口，符合风控铁律定位。
 - **自带离线样例**：无网络也能用 `--offline` 跑通全流程，便于验证与演示。
-- **跨平台**：hermes / trae / workbuddy / qwenwork 等复制即用。
+- **跨平台**：以 WorkBuddy 为主要目标平台，hermes / trae / qwenwork 等亦可复制即用。
 
 ## 二、目录结构
 
@@ -45,37 +45,63 @@ a_stock_selection/
 
 ## 四、安装
 
-### 方式 A：让 AI 帮你安装（最简单）
+### 方式 A：让 AI 帮你安装（推荐，全程由 AI 执行）
 
-把**本 README 的链接**发给任意支持联网的 AI，并说明目标平台即可，例如：
+把**本 README 的链接**发给任意支持联网的 AI，并说明目标平台（WorkBuddy）即可。直接复制以下「用户指令模板」：
 
-```
+```text
 请阅读 https://gitee.com/cvdnn/a_stock_selection/raw/master/README.md
-（或 GitHub：https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md）
-按其中的安装说明，先做「安装前一致性评估」，再把该技能安装到 WorkBuddy 的技能目录，
-并执行 selfcheck 校验。
+（GitHub 镜像：https://raw.githubusercontent.com/cvdnn/a_stock_selection/master/README.md）
+按其中「四、安装 → 方式 A」把 a-stock-selection 技能安装到 WorkBuddy 的技能目录：
+1) 先做「安装前一致性评估」（比对本环境已有清单与项目清单），输出评估报告；
+2) 安装时保留我现有的 output/ 使用记录，不要覆盖（如已存在请先备份）；
+3) 技能目录名使用 a-stock-selection（与 SKILL.md 的 name 一致；工程仓库名仍为 a_stock_selection）；
+4) 安装后执行 python scripts/run.py selfcheck 校验并汇报结果。
 ```
 
-AI 会克隆/复制目录到对应技能目录、按需重命名、并运行 `python scripts/run.py selfcheck` 校验。
+AI 会：读取 README → 按下方「文件复制位置与目录规范」复制技能本体（**保留 `output/`**）→ 运行 `python scripts/run.py selfcheck` 校验 → 输出【安装评估报告】。
 
-### 方式 B：一行命令复制安装（推荐）
+### 方式 B：一行命令复制安装
 
-把整个项目目录复制到目标平台的技能目录即可完成注册，无需改动代码：
+把项目目录复制到 WorkBuddy 的技能目录即可完成注册，无需改动代码。**安装后技能目录名使用 `a-stock-selection`**（与 `SKILL.md` 的 `name` 一致；工程仓库名仍为 `a_stock_selection`）。技能目录路径由 AI 自动检索：
 
 ```bash
-# hermes（技能目录为 ~/.hermes/skills/<技能名>/，以 SKILL.md 所在目录名作为技能名）
-git clone https://gitee.com/cvdnn/a_stock_selection.git ~/.hermes/skills/a_stock_selection
-
-# trae（项目级，随仓库走）
-cp -r a_stock_selection <workspace>/.trae/skills/a_stock_selection
-
-# workbuddy / qwenwork：复制到各自 skills 目录
+# WorkBuddy：克隆后即为技能目录（SKILL.md 所在目录名＝技能名）
+git clone https://gitee.com/cvdnn/a_stock_selection.git <WorkBuddy技能目录>/a-stock-selection
 ```
 
 ```bat
-:: Windows 直接复制
-xcopy /E /I a_stock_selection "%USERPROFILE%\.hermes\skills\a_stock_selection"
+:: Windows：复制工程目录为技能目录（源目录名 a_stock_selection，目标技能目录名 a-stock-selection）
+xcopy /E /I a_stock_selection "%USERPROFILE%\<WorkBuddy技能目录>\a-stock-selection"
 ```
+
+> 技能目录路径 AI 自动检索；**无权限或无法获取时，提示用户确认或输入路径**。
+
+### 文件复制位置与目录规范（AI 安装依据）
+
+本仓库**既是工程仓库、也是技能包来源**：`SKILL.md` 位于仓库根。安装时把技能本体复制到 WorkBuddy 技能目录；**工程仓库名 `a_stock_selection` 保持不变，安装后技能目录名改为 `a-stock-selection`**（与 `SKILL.md` 的 `name` 一致）：
+
+| 开发仓库路径（`a_stock_selection/`） | 复制到技能目录（`a-stock-selection/`） | 说明 |
+|---|---|---|
+| `SKILL.md` | `a-stock-selection/SKILL.md` | **必需**；frontmatter 的 `name: a-stock-selection` 须与技能目录名一致 |
+| `scripts/` | `a-stock-selection/scripts/` | 三内核 + 入口（排除 `__pycache__/`） |
+| `docs/定盘实时任务_公式清单.md` | `a-stock-selection/docs/` | **必需**（selfcheck 校验依据，只读） |
+| `references/`、`assets/`、`bin/`、`README.md`、`LICENSE` | 同名路径 | 文档 / 示例 / 启动器 / 许可 |
+| `output/` | **不复制** | 用户使用记录；目标端已有则**原样保留**，无则建空目录 |
+| `log/`、`temp/`、`scripts/__pycache__/` | **不复制** | 运行时目录 / 中间产物 |
+
+> 技能目录路径由 AI 自动检索；无权限或无法获取时提示用户确认或输入。`docs/` 内除公式清单外的文档（如本「交付设计」）为维护者资料，可选是否随技能包分发。
+
+**Skill 目录规范（Agent Skills 标准，WorkBuddy 遵循）**：
+
+```
+a-stock-selection/                    # 技能目录名＝技能名（kebab-case，须与 SKILL.md 的 name 一致）
+├── SKILL.md                          # 必需：YAML frontmatter(name/description) + 指令正文
+├── scripts/  references/  assets/    # 可选资源目录
+└── ...                               # 允许额外文件/目录（docs/ bin/ README.md LICENSE）
+```
+
+> 合规：`SKILL.md` 位于技能目录根、`name: a-stock-selection` 与技能目录名一致（kebab-case）、资源目录齐备。工程仓库名 `a_stock_selection` 保持不变，仅技能名与安装后技能目录名使用 `a-stock-selection`。
 
 ### 安装前一致性评估（推荐）
 
@@ -99,7 +125,7 @@ python scripts/run.py selfcheck                                   # 基础校验
 python scripts/run.py selfcheck --baseline /path/to/环境清单.md    # 追加与安装环境基线清单的一致性比对；不一致则非 0 退出
 ```
 
-> 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；hermes 以目录名作为技能名，故复制时目录名应与 profile 的 `name`（`a_stock_selection`）一致。
+> 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；WorkBuddy 以 `SKILL.md` 所在目录名作为技能名，故安装后技能目录名应与 `SKILL.md` 的 `name`（`a-stock-selection`）一致（工程仓库名 `a_stock_selection` 不变）。
 
 ## 五、使用方式
 

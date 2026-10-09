@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 运行时中间产物
+log/*
+!log/.gitkeep
+temp/*
+!temp/.gitkeep
+
+# 用户使用记录（本地保留，不入库）
+output/*
+!output/.gitkeep
