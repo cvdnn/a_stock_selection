@@ -60,9 +60,9 @@ def eval_candidate(pool_row, pool, light, cfg):
     buy = C.buy_signal(minute, rt, daily, sector_rebound=rebound, cfg=cfg)
     rec["buy"] = buy
 
-    strong = C.sector_strongest(rec["sector"], code, pool) if rec["sector"] else None
-    rec["sector_strongest_price"] = strong
-    rec["blocked"] = C.blocked(rt, daily, sector_strongest_price=strong, cfg=cfg)
+    pick = C.sector_strongest_pick(rec["sector"], code, pool) if rec["sector"] else None
+    rec["sector_strongest"] = pick
+    rec["blocked"] = C.blocked(rt, daily, strongest=pick, cfg=cfg)
     return rec
 
 
@@ -105,9 +105,14 @@ def main(argv=None):
     candidates = [eval_candidate(p, pool, light, cfg) for p in pool]
     pos_recs = [eval_position(p, light, cfg) for p in positions]
 
+    # 待确认规则：本轮实际做了「后排」判别（有板块）→ backrow_basis 待确认
+    active = ["backrow_basis"] if any(r.get("sector") for r in candidates) else []
+    pnote = C.pending_note(cfg, active)
+
     result = {"time": now.strftime("%Y-%m-%d %H:%M"), "stage": "watch",
               "light": light, "candidates": candidates, "positions": pos_recs,
-              "degraded": C.get_degraded(), "cache": C.get_cache_hits()}
+              "pending_rules": active, "degraded": C.get_degraded(),
+              "cache": C.get_cache_hits()}
 
     if args.json:
         C.out("", as_json=result)
@@ -150,6 +155,8 @@ def main(argv=None):
         else:
             lines.append("  · %s %s  现价 %.2f  持有  止损参考 %.2f"
                          % (r["code"], r["name"], r["price"], r["stop_price"]))
+    if pnote:
+        lines.append("\n" + pnote)
     note = C.degraded_note()
     if note:
         lines.append("\n" + note)

@@ -14,6 +14,7 @@ import copy
 import hashlib
 import urllib.request
 import urllib.parse
+import concurrent.futures
 from datetime import datetime, timedelta
 
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -313,6 +314,7 @@ def default_config():
         "datasource": {"mode": "live", "cache": copy.deepcopy(DEFAULT_CACHE)},
         "calendar": copy.deepcopy(CALENDAR_BASELINE),
         "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
+        "confirmations": {},
     }
 
 
@@ -365,6 +367,75 @@ def _coerce(v):
         except ValueError:
             return s
     return v
+
+
+# ---------------------------------------------------------------------------
+# 待确认规则（冲突/歧义时不擅自决定：提示用户选择；未选前按默认继续评估）
+# ---------------------------------------------------------------------------
+CONFIRM_RULES = [
+    {
+        "id": "backrow_basis",
+        "title": "「后排不买」判据口径",
+        "question": "「后排不买」用哪种口径判定同板块强弱？（清单原文按绝对股价，存在语义歧义）",
+        "options": [
+            {"key": "price", "label": "按绝对股价：现价 < 同板块最强票价 × 0.99（清单原文）"},
+            {"key": "pct", "label": "按涨幅：现价涨幅 < 同板块最强涨幅"},
+        ],
+        "default": "price",
+    },
+    {
+        "id": "mainline_source",
+        "title": "主线板块数据源",
+        "question": "东财板块排行不可用、已回退新浪行业（分类/命名与东财不同）时，主线以哪个口径为准？",
+        "options": [
+            {"key": "sina", "label": "接受回退新浪行业（当前行为）"},
+            {"key": "pause", "label": "暂停主线判定：不计分、不写入存档（待东财恢复）"},
+            {"key": "em", "label": "仅用东财：不可用则主线留空"},
+        ],
+        "default": "sina",
+    },
+]
+
+
+def rule_choice(cfg, rule_id):
+    """返回该规则的已选值；未选返回默认值。"""
+    for r in CONFIRM_RULES:
+        if r["id"] == rule_id:
+            val = (cfg.get("confirmations") or {}).get(rule_id)
+            if val in [o["key"] for o in r["options"]]:
+                return val
+            return r["default"]
+    return None
+
+
+def is_rule_confirmed(cfg, rule_id):
+    """该规则是否已被用户显式选择。"""
+    for r in CONFIRM_RULES:
+        if r["id"] == rule_id:
+            val = (cfg.get("confirmations") or {}).get(rule_id)
+            return val in [o["key"] for o in r["options"]]
+    return True
+
+
+def pending_note(cfg, active_ids):
+    """为"活跃且尚未确认"的规则生成待确认提示；无则返回 ''。
+
+    active_ids：本次运行实际触发了这些规则（由各阶段按运行态传入）。
+    """
+    pend = [r for r in CONFIRM_RULES
+            if r["id"] in active_ids and not is_rule_confirmed(cfg, r["id"])]
+    if not pend:
+        return ""
+    lines = ["⚠️ 待确认规则（冲突/歧义，请选择后继续评估；未选前按【默认】继续）："]
+    for i, r in enumerate(pend, 1):
+        lines.append("  %d. [%s] %s" % (i, r["id"], r["title"]))
+        lines.append("     问：%s" % r["question"])
+        for o in r["options"]:
+            star = "（默认）" if o["key"] == r["default"] else ""
+            lines.append("       %s) %s %s" % (o["key"], o["label"], star))
+        lines.append("     选择：run.py config set confirmations.%s=<%s>"
+                     % (r["id"], "/".join(o["key"] for o in r["options"])))
+    return "\n".join(lines)
 
 
 def thresholds(cfg=None):
@@ -1026,8 +1097,25 @@ def fetch_minute(code):
     return out
 
 
+def _fetch_daily_sina(code, count):
+    """新浪日K兜底（腾讯日K不可用时）。返回腾讯 fqkline 同构行 [date,open,close,high,low,volume]。"""
+    c = normalize_code(code)
+    url = ("http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           "CN_MarketData.getKLineData?symbol=%s&scale=240&ma=no&datalen=%d"
+           % (c, max(count, 20)))
+    arr = json.loads(http_get(url, encoding="utf-8").strip() or "[]")
+    rows = []
+    for it in arr or []:
+        rows.append([it.get("day"), it.get("open"), it.get("close"),
+                     it.get("high"), it.get("low"), it.get("volume")])
+    return rows
+
+
 def fetch_daily(code, count=120):
-    """腾讯前复权日K。返回 [{date, open, close, high, low, volume, pct}]。"""
+    """腾讯前复权日K。返回 [{date, open, close, high, low, volume, pct}]。
+
+    腾讯日K不可用时显式降级回退新浪日K（仅替换数据源，不改任何公式/阈值）。
+    """
     c = normalize_code(code)
     if _OFFLINE:
         data = _sample("daily.json")
@@ -1039,7 +1127,12 @@ def fetch_daily(code, count=120):
             js = json.loads(http_get(url))
             node = js.get("data", {}).get(c, {})
             return node.get("qfqday") or node.get("day") or []
-        rows = cached("腾讯日K", "daily_%s_%d" % (c, count), _do, kind="daily")
+        try:
+            rows = cached("腾讯日K", "daily_%s_%d" % (c, count), _do, kind="daily")
+        except Exception as e:  # noqa: BLE001
+            note_degraded("腾讯日K", "%s；已回退新浪日K" % e)
+            rows = cached("新浪日K", "daily_sina_%s_%d" % (c, count),
+                          lambda: _fetch_daily_sina(c, count), kind="daily")
     out = []
     for r in rows:
         if isinstance(r, str):
@@ -1113,12 +1206,133 @@ def fetch_sina_spot_all(pages=6, num=100, sort="changepercent"):
                   kind="sina_spot")
 
 
+_SINA_HY_URL = "http://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+
+
+def _parse_sina_board_list(txt):
+    """解析新浪板块清单 JS（newSinaHy.php / newFLJK.php）。
+
+    字段：code,name,家数,均价,涨跌额,涨跌幅%,成交量,成交额(元),领涨股...
+    返回 [{code,name,pct,amount_yi,rank}]（按涨幅降序）。
+    """
+    m = re.search(r"=\s*(\{.*\})", txt, re.S)
+    if not m:
+        raise RuntimeError("新浪板块解析失败")
+    obj = json.loads(m.group(1))
+    out = []
+    for val in obj.values():
+        f = str(val).split(",")
+        if len(f) < 8:
+            continue
+        try:
+            pct = float(f[5])
+            amt = float(f[7]) / 1e8  # 成交额单位为元 → 亿
+        except ValueError:
+            continue
+        out.append({"code": f[0], "name": f[1], "pct": pct,
+                    "amount_yi": amt, "rank": 0})
+    out.sort(key=lambda x: x["pct"], reverse=True)
+    for i, d in enumerate(out):
+        d["rank"] = i + 1
+    return out
+
+
+def _fetch_board_rank_sina(limit=80):
+    """新浪行业板块排行兜底（东财板块排行不可用时），口径与东财行业板块一致。"""
+    return _parse_sina_board_list(http_get(_SINA_HY_URL, encoding="gbk"))[:limit]
+
+
+def _fetch_board_members_sina(node, limit=400):
+    """新浪板块成分股（node=新浪 node 代码，如 new_blhy）。返回 [{code,name,price,pct}]。"""
+    url = ("http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           "Market_Center.getHQNodeData?page=1&num=%d&sort=changepercent&asc=0"
+           "&node=%s&symbol=&_s_r_a=page" % (limit, node))
+    arr = json.loads(http_get(url, encoding="gbk").strip() or "[]")
+    out = []
+    for d in arr or []:
+        try:
+            price = float(d.get("trade") or 0)
+            pct = float(d.get("changepercent") or 0)
+        except (TypeError, ValueError):
+            continue
+        out.append({"code": normalize_code(str(d.get("symbol") or d.get("code") or "")),
+                    "name": d.get("name"), "price": price, "pct": pct})
+    return out
+
+
+_SINA_HY_INDEX = None
+_SINA_HY_INDEX_TTL = 7 * 86400
+
+
+def _sina_hy_index():
+    """新浪行业「个股↔行业」索引（只存成员关系，价格查询时实时另取）。
+
+    仅在东财个股板块不可用时构建，为「后排不买」提供同源（新浪行业）的
+    个股→行业（by_code）与 行业→node（by_name）映射，避免跨数据源分类不一致。
+    首次构建并发拉取各行业成分股并落盘缓存（7 天），后续直接复用。
+    """
+    global _SINA_HY_INDEX
+    if _SINA_HY_INDEX is not None:
+        return _SINA_HY_INDEX
+    p = os.path.join(_cache_dir(), "sina_hy_index.json")
+    try:
+        if os.path.exists(p):
+            node = json.load(open(p, encoding="utf-8"))
+            age = datetime.now().timestamp() - float(node.get("ts", 0))
+            if 0 <= age <= _SINA_HY_INDEX_TTL and node.get("by_name"):
+                _SINA_HY_INDEX = {"by_name": node["by_name"], "by_code": node["by_code"]}
+                return _SINA_HY_INDEX
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        boards = _parse_sina_board_list(http_get(_SINA_HY_URL, encoding="gbk"))
+    except Exception as e:  # noqa: BLE001
+        note_degraded("新浪行业索引", e)
+        boards = []
+
+    def _one(b):
+        try:
+            members = _fetch_board_members_sina(b["code"], 1000)
+        except Exception:  # noqa: BLE001
+            return None
+        return b["name"], b["code"], [m["code"] for m in members]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        results = [r for r in ex.map(_one, boards) if r]
+    by_name, by_code = {}, {}
+    for name, code, codes in results:
+        by_name[name] = code
+        for cc in codes:
+            by_code[cc] = name
+    _SINA_HY_INDEX = {"by_name": by_name, "by_code": by_code}
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"ts": datetime.now().timestamp(), "by_name": by_name,
+                       "by_code": by_code}, f, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+    return _SINA_HY_INDEX
+
+
+_BOARD_SOURCE = None
+
+
+def board_source():
+    """本次运行「主线板块」实际取数来源：'em'（东财）/ 'sina'（新浪回退）/ None（未取）。"""
+    return _BOARD_SOURCE
+
+
 def fetch_board_rank(limit=80):
-    """东方财富行业板块排行。返回 [{code,name,pct,amount_yi,rank}]。"""
+    """东方财富行业板块排行。返回 [{code,name,pct,amount_yi,rank}]。
+
+    东财接口不可用/返回空时，显式降级回退新浪行业板块（仅替换数据源，
+    不改任何公式/阈值；两源同为「行业板块 + 涨跌幅 + 成交额」口径）。
+    """
+    global _BOARD_SOURCE
     if _OFFLINE:
         return _sample("board_rank.json")
 
-    def _do():
+    def _do_em():
         url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
                "&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f3,f6" % limit)
         js = json.loads(http_get(url))
@@ -1133,11 +1347,30 @@ def fetch_board_rank(limit=80):
             out.append({"code": d.get("f12"), "name": d.get("f14"),
                         "pct": pct, "amount_yi": amt, "rank": i + 1})
         return out
-    return cached("东财板块排行", "board_rank_%d" % limit, _do, kind="board_rank")
+
+    em_err = None
+    rows = []
+    try:
+        rows = cached("东财板块排行", "board_rank_%d" % limit, _do_em,
+                      kind="board_rank", cache_empty=False)
+    except Exception as e:  # noqa: BLE001
+        em_err = e
+    if rows:
+        _BOARD_SOURCE = "em"
+        return rows
+    note_degraded("东财板块排行", "%s；已回退新浪行业板块" % (em_err or "返回空"))
+    rows = cached("新浪板块排行", "board_rank_sina_%d" % limit,
+                  lambda: _fetch_board_rank_sina(limit),
+                  kind="board_rank", cache_empty=False)
+    if rows:
+        _BOARD_SOURCE = "sina"
+    return rows
 
 
 def fetch_limit_up_pool(date_str=None):
-    """东方财富涨停板股池。返回 [{code,name}]；接口不可用时显式降级并返回 []。"""
+    """东方财富涨停板股池。返回 [{code,name,lbc,fbt,zbc,hs,fund,hybk,zt_days,zt_count}]；
+    接口不可用时显式降级并返回 []。lbc=连板数，fbt=首次封板时间(HHMMSS)，zbc=炸板次数，
+    hs=换手率(%)，fund=封单资金(元)，hybk=行业板块，zt_days/zt_count=涨停统计(如 3天2板)。"""
     if _OFFLINE:
         return _sample("limit_up.json").get(date_str or "today", [])
     d = date_str or datetime.now().strftime("%Y%m%d")
@@ -1149,8 +1382,20 @@ def fetch_limit_up_pool(date_str=None):
                    "&Pageindex=0&pagesize=180&sort=fbt:asc&date=%s" % d)
             js = json.loads(http_get(url))
             pool = ((js.get("data") or {}).get("pool")) or []
-            return [{"code": normalize_code(str(x.get("c", ""))), "name": x.get("n", "")}
-                    for x in pool]
+            out = []
+            for x in pool:
+                zttj = x.get("zttj") if isinstance(x.get("zttj"), dict) else {}
+                out.append({"code": normalize_code(str(x.get("c", ""))),
+                            "name": x.get("n", ""),
+                            "lbc": x.get("lbc"),
+                            "fbt": x.get("fbt"),
+                            "zbc": x.get("zbc"),
+                            "hs": x.get("hs"),
+                            "fund": x.get("fund"),
+                            "hybk": x.get("hybk"),
+                            "zt_days": zttj.get("days"),
+                            "zt_count": zttj.get("ct")})
+            return out
         except Exception as e:  # noqa: BLE001
             note_degraded("东财涨停池", e)
             return []
@@ -1159,7 +1404,11 @@ def fetch_limit_up_pool(date_str=None):
 
 
 def fetch_stock_sector(code):
-    """东方财富个股所属行业板块名；接口不可用时显式降级并返回 None（由 Agent 用业务知识回填）。"""
+    """个股所属行业板块名。
+
+    东财不可用时回退新浪行业（同源，用于「后排不买」同板块判定）；仍无则返回
+    None（由 Agent 用业务知识回填）。
+    """
     c = normalize_code(code)
     if _OFFLINE:
         return _sample("sector_map.json").get(c)
@@ -1171,15 +1420,27 @@ def fetch_stock_sector(code):
             js = json.loads(http_get(url))
             return (js.get("data") or {}).get("f127")
         except Exception as e:  # noqa: BLE001
-            note_degraded("东财个股板块", e)
+            note_degraded("东财个股板块", "%s；已回退新浪行业" % e)
             return None
-    return cached("东财个股板块", "sector_%s" % c, _do, kind="sector", cache_empty=False)
+    name = cached("东财个股板块", "sector_%s" % c, _do, kind="sector", cache_empty=False)
+    if not name:
+        name = _sina_hy_index()["by_code"].get(c)
+    return name
 
 
 def fetch_board_members(board_code, limit=400):
-    """东方财富板块成分股。返回 [{code,name,price,pct}]；接口不可用时显式降级并返回 []。"""
+    """板块成分股。返回 [{code,name,price,pct}]。
+
+    新浪 node 代码（new_*/hangye_*/gn_*）走新浪；其余（东财 BK*）走东财；
+    不可用时显式降级并返回 []。
+    """
     if _OFFLINE:
         return _sample("board_members.json").get(board_code, [])
+    code = str(board_code or "")
+    if code.startswith(("new_", "hangye_", "gn_")):
+        return cached("新浪板块成分股", "members_sina_%s_%d" % (code, limit),
+                      lambda: _fetch_board_members_sina(code, limit),
+                      kind="board_members", cache_empty=False)
 
     def _do():
         try:
@@ -1219,11 +1480,11 @@ def resolve_board_code(sector, boards=None):
     return None
 
 
-def sector_strongest(sector, code, pool=None):
-    """检索同板块最强票（按涨幅最大者的现价）——【后排不买】判据。
+def sector_strongest_pick(sector, code, pool=None):
+    """检索同板块最强票（按涨幅最大者），返回 {"code","price","pct"}；无则 None。
 
-    优先检索东财板块成分股；板块无对应或接口不可用时回退候选池同板块。
-    返回最强票的现价(float)；无同板块数据返回 None。
+    【后排不买】判据取数：优先板块成分股（东财；不可用时回退新浪行业同源链）；
+    板块无对应或不可用时回退候选池同板块。
     """
     self_code = normalize_code(code)
     if not sector:
@@ -1235,15 +1496,21 @@ def sector_strongest(sector, code, pool=None):
             peers = [m for m in members
                      if m["code"] != self_code and m.get("price")]
             if peers:
-                return max(peers, key=lambda m: m.get("pct", 0))["price"]
+                return max(peers, key=lambda m: m.get("pct", 0))
     except Exception as e:  # noqa: BLE001
         note_degraded("东财板块成分股", e)
     if pool:
         peers = [p for p in pool
                  if p.get("sector") == sector and p["code"] != self_code]
         if peers:
-            return max(peers, key=lambda p: p.get("pct", 0)).get("price")
+            return max(peers, key=lambda p: p.get("pct", 0))
     return None
+
+
+def sector_strongest(sector, code, pool=None):
+    """同板块最强票现价(float)；无同板块数据返回 None。"""
+    pick = sector_strongest_pick(sector, code, pool)
+    return pick.get("price") if pick else None
 
 
 # ---------------------------------------------------------------------------
@@ -1416,7 +1683,11 @@ def buy_signal(minute, rt, daily, sector_rebound=False, cfg=None):
 
 
 # ---- 六、三不买 ----
-def blocked(rt, daily, sector_strongest_price=None, cfg=None):
+def blocked(rt, daily, strongest=None, sector_strongest_price=None, cfg=None):
+    """三不买自动拦截。strongest=同板块最强票 dict{price,pct} 或现价(float)。
+
+    「后排」口径按待确认规则 backrow_basis（默认 price=绝对股价；可选 pct=涨幅）。
+    """
     hits = []
     price = rt.get("price", 0)
     prev_close = rt.get("prev_close", 0)
@@ -1431,8 +1702,17 @@ def blocked(rt, daily, sector_strongest_price=None, cfg=None):
             hits.append("首阴不买")
     if ma10 and price < ma10:
         hits.append("破位不买")
-    if sector_strongest_price and price < sector_strongest_price * 0.99:
-        hits.append("后排不买")
+    if strongest is None and sector_strongest_price is not None:
+        strongest = sector_strongest_price
+    if isinstance(strongest, (int, float)):
+        strongest = {"price": strongest}
+    if strongest and strongest.get("price"):
+        basis = rule_choice(cfg, "backrow_basis") if cfg else "price"
+        if basis == "pct":
+            if (rt.get("pct") or 0) < (strongest.get("pct") or 0):
+                hits.append("后排不买")
+        elif price < strongest["price"] * 0.99:
+            hits.append("后排不买")
     return hits
 
 
