@@ -23,7 +23,7 @@
 
 | 类别 | 内容 | 说明 |
 |---|---|---|
-| **交付** | `scripts/`、`docs/`、`references/`、`assets/`、`bin/`、`README.md`、`SKILL.md`、`LICENSE` | 技能本体与说明 |
+| **交付** | `scripts/`、`docs/`、`references/`、`assets/`、`bin/`、`README.md`、`SKILL.md`、`VERSION`、`LICENSE` | 技能本体与说明（`VERSION` 为版本号唯一事实源，必需） |
 | **不交付（保留在目标端）** | `output/`（`config.json`/`positions.json`/`候选池.txt`/`主线存档.json`/`cache/`） | **用户使用记录，绝不覆盖** |
 | **不交付（噪音）** | `scripts/__pycache__/`、`log/`、`temp/` | 运行中间产物 |
 
@@ -56,8 +56,9 @@
 
 > 供 AI 执行；每步给出命令与判据，任一步不通过则停止并告知用户。
 
-**步骤 1 · 取文档**
+**步骤 1 · 取文档与项目来源**
 读取 README（及项目内 `docs/定盘实时任务_公式清单.md`），确认目标平台与技能目录（AI 自动检索技能目录；无权限或获取不到时提示用户确认或输入路径）。
+项目来源二选一：① `git clone`（README 方式 B）；② **从最新 release 的 tag 源码归档下载**（README 方式 C，版本可追溯、无需 git，推荐给不装 git 的环境）——先查 `GET /releases/latest` 取 `tag_name`（Gitee 主、GitHub 镜像），再下载该 tag 的源码归档。
 
 **步骤 2 · 安装前一致性评估**（比对"环境已有清单"与"项目自带清单"）
 1. 在目标平台技能目录查找是否已有 `docs/定盘实时任务_公式清单.md`（找不到＝全新安装）。
@@ -76,7 +77,7 @@ cp -r <技能目录>/output  <技能目录>/output.bak.$(date +%Y%m%d%H%M%S)
 # 技能目录名必须是 a-stock-selection（WorkBuddy 以 SKILL.md 所在目录名作为技能名）
 # 工程仓库名 a_stock_selection 不变：复制到技能目录时重命名为 a-stock-selection
 cp -r <源>/scripts  <源>/docs  <源>/references  <源>/assets  <源>/bin \
-      <源>/README.md  <源>/SKILL.md  <源>/LICENSE  <技能目录>/   # <技能目录> 结尾须为 /a-stock-selection
+      <源>/README.md  <源>/SKILL.md  <源>/VERSION  <源>/LICENSE  <技能目录>/   # <技能目录> 结尾须为 /a-stock-selection
 # 显式排除：output/、scripts/__pycache__/、cache/、log/、temp/
 ```
 
@@ -92,10 +93,10 @@ python <技能目录>/scripts/run.py selfcheck
 python <技能目录>/scripts/run.py selfcheck --baseline <环境清单路径>
 ```
 
-判据：输出含 `skill_root` 为安装后新路径；清单存在/可读；结尾为 `✓ 安装后校验通过`。
+判据：输出含 `skill_root` 为安装后新路径；`version` 非空且与 `VERSION` 一致；清单存在/可读；结尾为 `✓ 安装后校验通过`。
 
 **步骤 7 · 输出【AI 代装报告】并转述给用户**
-报告字段：平台 / 技能目录 / 环境清单(路径|有否|版本) / 项目清单(版本) / 差异明细 / 结论 / 建议动作 / selfcheck 结果。
+报告字段：平台 / 技能目录 / 项目版本(`VERSION`) / 环境清单(路径|有否|版本) / 项目清单(版本) / 差异明细 / 结论 / 建议动作 / selfcheck 结果。
 
 ---
 
@@ -152,6 +153,7 @@ mv <技能目录>/output.bak.<时间戳>  <技能目录>/output
 | 技能目录名不符 `a-stock-selection` | 重命名技能目录为 `a-stock-selection`（与 `SKILL.md` 的 name 一致） |
 | `Python < 3.8` | 提示用户升级 Python（无需装库） |
 | 无网络 | 用离线样例 `--offline` 演示；实盘取数需腾讯/新浪/东财可达 |
+| `run.py version` 显示"未获取" | 该端尚无 release 或网络不可达；不影响使用，待发布 release 后自动生效 |
 | 技能目录只读 | 用 `--data-dir <可写目录>` 或环境变量 `DINGPAN_DATA_DIR` |
 
 ---

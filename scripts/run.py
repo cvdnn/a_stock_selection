@@ -216,6 +216,7 @@ def cmd_selfcheck(args):
     info = {
         "python": sys.version.split()[0],
         "skill_root": C.SKILL_ROOT,
+        "version": C.get_version(),
         "data_dir": C.get_data_dir(),
         "config_path": C.config_path(),
         "pool_path": C.pool_path(),
@@ -310,6 +311,37 @@ def cmd_sample(args):
     return 0 if rep["ok"] else 1
 
 
+def cmd_version(args):
+    _global_flags(args)
+    local = C.get_version()
+    if getattr(args, "local", False) or C.is_offline():
+        C.out("版本：%s" % (local or "未知（VERSION 缺失）"),
+              as_json={"local": local, "checked": False} if args.json else None)
+        return 0
+    res = C.check_update(local)
+    if args.json:
+        C.out("", as_json=res)
+        return 0
+    C.out("版本：%s" % (local or "未知（VERSION 缺失）"))
+    st = res["status"]
+    if st == "unavailable":
+        C.out("最新：未获取（%s 均不可达，已跳过比对）"
+              % "/".join(C.DEFAULT_RELEASE_ORDER))
+        return 0
+    C.out("最新：%s（来源 %s）" % (res["latest"], res["source"]))
+    if st == "up_to_date":
+        C.out("结论：✅ 已是最新版本")
+    elif st == "update_available":
+        C.out("结论：⬆️ 发现新版本，建议更新")
+        C.out("下载：%s" % res["archive"])
+        C.out("发布：%s" % (res["url"] or "-"))
+    elif st == "ahead":
+        C.out("结论：ℹ️ 本地版本高于线上最新（可能为开发版）")
+    else:
+        C.out("结论：⚠️ 版本格式无法比对（本地 %s / 最新 %s）" % (local, res["latest"]))
+    return 0
+
+
 def build_parser():
     g = argparse.ArgumentParser(prog="run.py", description="A股定盘实时任务入口")
     g.add_argument("--data-dir", help="运行数据目录（默认项目内 output/）")
@@ -360,6 +392,10 @@ def build_parser():
     p_sample.add_argument("--codes", help="gen：逗号分隔代码，如 600000,000001")
     p_sample.add_argument("--date", help="gen：数据日期 YYYY-MM-DD（默认今天）")
     p_sample.set_defaults(func=cmd_sample)
+
+    p_ver = sub.add_parser("version", help="版本号（查看本地/联网比对最新 release）")
+    p_ver.add_argument("--local", action="store_true", help="只看本地版本，不联网")
+    p_ver.set_defaults(func=cmd_version)
     return g
 
 

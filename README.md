@@ -1,6 +1,6 @@
 # a_stock_selection · A股定盘实时任务
 
-> 技能名：`a-stock-selection` ｜ 工程名：`a_stock_selection` ｜ 版本：v3 主线龙头低吸版
+> 技能名：`a-stock-selection` ｜ 工程名：`a_stock_selection` ｜ 版本：v3 主线龙头低吸版（见 `VERSION`）
 > 内核：`preopen.py`（竞价）→ `watch.py`（盘中）→ `daily.py`（收盘）
 
 按 `docs/定盘实时任务_公式清单.md`（唯一公式依据，保持只读）完整实现「大盘红绿灯 → 主线判定 → 龙头排序 → 买点/卖点 → 仓位风控」的 A 股盘中实时决策链路，按交易时段自动分流，每 10 分钟运行一次。
@@ -24,6 +24,7 @@
 a_stock_selection/
 ├── README.md                # 项目说明与使用方式（本文件）
 ├── SKILL.md                 # 技能说明（供 AI 平台识别与路由）
+├── VERSION                  # 版本号唯一事实源（形如 v3，与 git tag 同名）
 ├── scripts/                 # 核心代码
 │   ├── common.py            # 取数 / 公式 / 配置 / 状态
 │   ├── preopen.py           # 竞价选股内核
@@ -77,6 +78,27 @@ xcopy /E /I a_stock_selection "%USERPROFILE%\<WorkBuddy技能目录>\a-stock-sel
 
 > 技能目录路径 AI 自动检索；**无权限或无法获取时，提示用户确认或输入路径**。
 
+### 方式 C：从最新 Release 下载（版本可追溯，无需 git）
+
+不装 git、或希望锁定可追溯的发行版本时，从**最新 release** 的 tag 源码归档安装：
+
+```bash
+# 1) 查最新版本 tag（Gitee 主仓库，失败可换 GitHub 镜像）
+curl -s https://gitee.com/api/v5/repos/cvdnn/a_stock_selection/releases/latest | grep -o '"tag_name":"[^"]*"'
+# GitHub：curl -s https://api.github.com/repos/cvdnn/a_stock_selection/releases/latest | grep -o '"tag_name": *"[^"]*"'
+
+# 2) 下载该 tag 的源码归档（把 <tag> 换成上一步结果，如 v3）
+curl -L -o a_stock_selection.zip "https://gitee.com/cvdnn/a_stock_selection/repository/archive/<tag>?format=zip"
+# GitHub：curl -L -o a_stock_selection.tar.gz "https://github.com/cvdnn/a_stock_selection/archive/refs/tags/<tag>.tar.gz"
+
+# 3) 解压并复制技能本体到技能目录（重命名为 a-stock-selection，保留已有 output/）
+unzip a_stock_selection.zip -d /tmp/a_stock_selection_rel
+# 解压目录名可能为 a_stock_selection-<tag>/（GitHub）或 a_stock_selection/（Gitee）
+cp -r /tmp/a_stock_selection_rel/a_stock_selection*/ <WorkBuddy技能目录>/a-stock-selection
+```
+
+装好后用 `python scripts/run.py version` 查看本地版本并比对最新 release（见 5.3）。
+
 ### 文件复制位置与目录规范（AI 安装依据）
 
 本仓库**既是工程仓库、也是技能包来源**：`SKILL.md` 位于仓库根。安装时把技能本体复制到 WorkBuddy 技能目录；**工程仓库名 `a_stock_selection` 保持不变，安装后技能目录名改为 `a-stock-selection`**（与 `SKILL.md` 的 `name` 一致）：
@@ -84,6 +106,7 @@ xcopy /E /I a_stock_selection "%USERPROFILE%\<WorkBuddy技能目录>\a-stock-sel
 | 开发仓库路径（`a_stock_selection/`） | 复制到技能目录（`a-stock-selection/`） | 说明 |
 |---|---|---|
 | `SKILL.md` | `a-stock-selection/SKILL.md` | **必需**；frontmatter 的 `name: a-stock-selection` 须与技能目录名一致 |
+| `VERSION` | `a-stock-selection/VERSION` | **必需**；版本号唯一事实源，`run.py version` 与 selfcheck 读取 |
 | `scripts/` | `a-stock-selection/scripts/` | 三内核 + 入口（排除 `__pycache__/`） |
 | `docs/定盘实时任务_公式清单.md` | `a-stock-selection/docs/` | **必需**（selfcheck 校验依据，只读） |
 | `references/`、`assets/`、`bin/`、`README.md`、`LICENSE` | 同名路径 | 文档 / 示例 / 启动器 / 许可 |
@@ -174,6 +197,10 @@ python scripts/run.py auto --json
 
 # 无网络演示
 python scripts/run.py --offline auto --stage watch
+
+# 版本号：查看本地版本 / 联网比对最新 release（Gitee 主、GitHub 回退）
+python scripts/run.py version
+python scripts/run.py version --local          # 只看本地，不联网
 ```
 
 参数落库（脚本不假设你知道配置位置；自然语言使用时由 Agent 代为执行）：
@@ -222,6 +249,21 @@ python scripts/run.py pool
 - **盘中取数**：盘中把当日实时拼接为日 K 末根，`trend_ok` 的 MA5今/MA5昨/zt5 与「首阴」据此取数；「首阴」的「昨日涨幅」取上一根完整日 K。
 - **同板块判定**：候选池缺板块列时自动用东财个股板块补齐；「后排/板块回流」优先检索东财板块成分股，不可用时回退候选池同板块列。
 
-## 七、许可
+## 七、版本与发布（维护者）
+
+- **版本号唯一事实源**：根目录 [`VERSION`](VERSION)，内容形如 `v3`，与 git tag 同名；采用整数递增 `v1 → v2 → … → vN`。
+- **发版流程**：
+  ```bash
+  # 1) 修改 VERSION（如 v3 → v4）并提交
+  # 2) 打同名 tag 并推送双远端（origin=Gitee，github=GitHub）
+  git tag -a v4 -m "v4" && git push origin v4 && git push github v4
+  # 3) 在两端各建一个「发行版 / Release」（tag 选 v4）
+  #    GitHub：gh release create v4 --title v4 --notes "..."   或网页创建
+  #    Gitee ：仓库 → 发行版 → 新建（注意：Gitee 的「发行版」须单独创建，仅打 tag 不生成 release）
+  ```
+- **下载**：安装侧用「方式 C：从最新 Release 下载」；`python scripts/run.py version` 会读取最新 release 的 tag 并提示是否有更新（Gitee 主、GitHub 回退；无 release 或网络不可达时显式降级，不报错）。
+- **联动约定**：`docs/定盘实时任务_公式清单.md` 发生变更时，同步递增 `VERSION`。
+
+## 八、许可
 
 仅供个人研究与学习使用，不构成任何投资建议。

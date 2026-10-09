@@ -1658,6 +1658,109 @@ def formula_list_diff(baseline_path, project_path=None):
 
 
 # ---------------------------------------------------------------------------
+# 版本与发布（VERSION 为唯一事实源；最新版本取自 Gitee/GitHub 的 release）
+#   版本号形如 v1、v2、v3 … vN（整数递增），与 git tag 同名。
+#   下载采用「tag 源码归档」，无需自建 release 资产。
+# ---------------------------------------------------------------------------
+VERSION_FILE = os.path.join(SKILL_ROOT, "VERSION")
+REPO_OWNER = "cvdnn"
+REPO_NAME = "a_stock_selection"
+# 探测顺序：Gitee 为主、GitHub 为镜像（国内网络更稳）。
+DEFAULT_RELEASE_ORDER = ("gitee", "github")
+RELEASE_SOURCES = {
+    "gitee": {
+        "api": "https://gitee.com/api/v5/repos/{owner}/{repo}/releases/latest",
+        "archive": "https://gitee.com/{owner}/{repo}/repository/archive/{tag}?format=zip",
+        "home": "https://gitee.com/{owner}/{repo}/releases",
+    },
+    "github": {
+        "api": "https://api.github.com/repos/{owner}/{repo}/releases/latest",
+        "archive": "https://github.com/{owner}/{repo}/archive/refs/tags/{tag}.tar.gz",
+        "home": "https://github.com/{owner}/{repo}/releases",
+    },
+}
+
+
+def get_version():
+    """读取 VERSION（唯一事实源），返回形如 'v3'；文件缺失或不可读返回 None。"""
+    if not os.path.exists(VERSION_FILE):
+        return None
+    try:
+        with open(VERSION_FILE, encoding="utf-8") as f:
+            return f.read().strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def parse_version(v):
+    """把 'v3'/'V12'/'3' 解析为整数 3/12；无法解析返回 None。"""
+    m = re.match(r"^v?(\d+)", str(v or "").strip(), re.I)
+    return int(m.group(1)) if m else None
+
+
+def _probe_release(source):
+    """查询单平台的最新 release，返回 {source, tag, name, url, published_at, archive}。"""
+    if source not in RELEASE_SOURCES:
+        raise ValueError("未知发布源: %s" % source)
+    cfg = RELEASE_SOURCES[source]
+    api = cfg["api"].format(owner=REPO_OWNER, repo=REPO_NAME)
+    js = json.loads(http_get(api))
+    tag = str(js.get("tag_name") or "").strip()
+    if not tag:
+        raise RuntimeError("最新 release 无 tag_name（可能尚未创建发行版）")
+    return {
+        "source": source,
+        "tag": tag,
+        "name": js.get("name") or "",
+        "url": js.get("html_url") or cfg["home"].format(owner=REPO_OWNER, repo=REPO_NAME),
+        "published_at": js.get("published_at") or js.get("created_at") or "",
+        "archive": cfg["archive"].format(owner=REPO_OWNER, repo=REPO_NAME, tag=tag),
+    }
+
+
+def latest_release(order=DEFAULT_RELEASE_ORDER):
+    """按 order 依次探测最新 release；返回 (release|None, errors[])。全部失败时 release=None。"""
+    errors = []
+    for source in order:
+        try:
+            return _probe_release(source), errors
+        except Exception as e:  # noqa: BLE001
+            errors.append({"source": source, "detail": str(e)})
+    return None, errors
+
+
+def check_update(local=None, order=DEFAULT_RELEASE_ORDER):
+    """比对本地版本与最新 release。
+
+    status: up_to_date / update_available / ahead / unavailable / unknown。
+    网络不可达时 status=unavailable（显式降级，不报错中断）。
+    """
+    local = get_version() if local is None else local
+    res = {"local": local, "latest": None, "source": None, "status": "unknown",
+           "archive": None, "url": None, "published_at": None, "errors": []}
+    rel, errors = latest_release(order)
+    res["errors"] = errors
+    if not rel:
+        res["status"] = "unavailable"
+        return res
+    res["latest"] = rel["tag"]
+    res["source"] = rel["source"]
+    res["archive"] = rel["archive"]
+    res["url"] = rel["url"]
+    res["published_at"] = rel["published_at"]
+    lv, rv = parse_version(local), parse_version(rel["tag"])
+    if lv is None or rv is None:
+        res["status"] = "unknown"
+    elif rv > lv:
+        res["status"] = "update_available"
+    elif rv == lv:
+        res["status"] = "up_to_date"
+    else:
+        res["status"] = "ahead"
+    return res
+
+
+# ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
 def out(text, as_json=None):
