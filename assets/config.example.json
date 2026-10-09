@@ -3,7 +3,12 @@
     "total_capital": 200000
   },
   "datasource": {
-    "mode": "live"
+    "mode": "live",
+    "cache": {
+      "enabled": false,
+      "ttl_seconds": 60,
+      "ttl": {}
+    }
   },
   "calendar": {
     "holidays": ["2026-01-01", "2026-01-02",

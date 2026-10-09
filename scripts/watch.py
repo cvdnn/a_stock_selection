@@ -97,6 +97,7 @@ def main(argv=None):
     cfg = C.load_config()
     now = datetime.now()
     C.clear_degraded()
+    C.clear_cache_hits()
     light = C.market_light(cfg=cfg)
     positions = C.load_positions()
     pool = C.load_pool()
@@ -106,7 +107,7 @@ def main(argv=None):
 
     result = {"time": now.strftime("%Y-%m-%d %H:%M"), "stage": "watch",
               "light": light, "candidates": candidates, "positions": pos_recs,
-              "degraded": C.get_degraded()}
+              "degraded": C.get_degraded(), "cache": C.get_cache_hits()}
 
     if args.json:
         C.out("", as_json=result)
@@ -152,6 +153,9 @@ def main(argv=None):
     note = C.degraded_note()
     if note:
         lines.append("\n" + note)
+    cnote = C.cache_note()
+    if cnote:
+        lines.append("\n" + cnote)
     C.out("\n".join(lines))
     return 0
 

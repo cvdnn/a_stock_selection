@@ -264,6 +264,52 @@ def cmd_selfcheck(args):
     return 0 if reason is None else 1
 
 
+def cmd_cache(args):
+    _global_flags(args)
+    if args.action == "clear":
+        n = C.cache_clear()
+        C.out("已清空数据缓存：删除 %d 个文件" % n)
+        return 0
+    st = C.cache_status()
+    C.out("数据缓存：%s  全局兜底 TTL %ss  目录 %s  条目 %d"
+          % ("启用" if st["enabled"] else "关闭", st["ttl_seconds"], st["dir"], st["count"]),
+          as_json=st if args.json else None)
+    if not args.json:
+        for it in st["items"][:30]:
+            C.out("  %-14s %-28s TTL %3ss  龄 %4.0fs  %s"
+                  % (it["source"], it["key"], it["ttl"], it["age"], it["time"]))
+        if not st["enabled"]:
+            C.out("  提示：缓存默认关闭。启用：run.py config set datasource.cache.enabled=true")
+        C.out("  按数据源覆盖 TTL：run.py config set datasource.cache.ttl='{\"daily\":600}'")
+    return 0
+
+
+def cmd_sample(args):
+    _global_flags(args)
+    if args.action == "gen":
+        codes = [x.strip() for x in (args.codes or "").split(",") if x.strip()]
+        info = C.sample_gen(codes or None, getattr(args, "date", None))
+        C.out("已生成离线样例：%d 只股票  日期 %s  涨停池 %d 只\n  写入 %s"
+              % (len(info["codes"]), info["date"], info["limit_up_count"], C.SAMPLE_DIR),
+              as_json=info if args.json else None)
+        return 0
+    rep = C.sample_verify()
+    if args.json:
+        C.out("", as_json=rep)
+        return 0
+    C.out("离线样例校验：%s" % ("通过 ✓" if rep["ok"] else "未通过 ✗"))
+    for name, f in rep["files"].items():
+        C.out("  %-18s %3d 条  %s" % (name, f["count"],
+              "OK" if not f["issues"] else "问题：" + "；".join(f["issues"])))
+    if rep["consistency_issues"]:
+        C.out("  跨文件一致性：")
+        for x in rep["consistency_issues"]:
+            C.out("    ✗ %s" % x)
+    else:
+        C.out("  跨文件一致性：OK")
+    return 0 if rep["ok"] else 1
+
+
 def build_parser():
     g = argparse.ArgumentParser(prog="run.py", description="A股定盘实时任务入口")
     g.add_argument("--data-dir", help="运行数据目录（默认项目内 output/）")
@@ -304,6 +350,16 @@ def build_parser():
     p_sc = sub.add_parser("selfcheck", help="环境自检（含公式清单校验）")
     p_sc.add_argument("--baseline", help="安装环境已有公式清单路径，用于一致性比对")
     p_sc.set_defaults(func=cmd_selfcheck)
+
+    p_cache = sub.add_parser("cache", help="数据缓存（查看/清空）")
+    p_cache.add_argument("action", nargs="?", default="show", choices=["show", "clear"])
+    p_cache.set_defaults(func=cmd_cache)
+
+    p_sample = sub.add_parser("sample", help="离线样例（校验/生成）")
+    p_sample.add_argument("action", nargs="?", default="verify", choices=["verify", "gen"])
+    p_sample.add_argument("--codes", help="gen：逗号分隔代码，如 600000,000001")
+    p_sample.add_argument("--date", help="gen：数据日期 YYYY-MM-DD（默认今天）")
+    p_sample.set_defaults(func=cmd_sample)
     return g
 
 

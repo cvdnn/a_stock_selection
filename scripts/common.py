@@ -14,7 +14,7 @@ import copy
 import hashlib
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(SKILL_ROOT, "assets")
@@ -66,6 +66,24 @@ DEFAULT_THRESHOLDS = {
     "sentiment": {"continuation": 2.0, "fade": -1.0},
 }
 
+# ---------------------------------------------------------------------------
+# 数据缓存默认值 —— 可选（默认关闭）。用于同一时段内的二次快速响应：
+# live 取数成功后落盘，TTL 内再次取用直接复用；命中会显式标注，绝不冒充实时。
+# 按数据源差异化 TTL：变化慢的日K/板块类给更长 TTL，行情类保持短 TTL。
+# 优先级：config.ttl[kind] > DEFAULT_CACHE_TTL[kind] > config.ttl_seconds > 60
+# ---------------------------------------------------------------------------
+DEFAULT_CACHE_TTL = {
+    "realtime": 60,        # 实时行情：变化最快
+    "minute": 60,          # 分时
+    "sina_spot": 60,       # 全市场快照
+    "board_rank": 120,     # 行业板块排行
+    "board_members": 120,  # 板块成分股
+    "limit_up": 300,       # 涨停池（日内基本稳定）
+    "daily": 300,          # 日K（场内基本不变）
+    "sector": 600,         # 个股所属板块（极少变动）
+}
+DEFAULT_CACHE = {"enabled": False, "ttl_seconds": 60, "ttl": {}}
+
 # 运行时开关
 _DATA_DIR = None
 _OFFLINE = False
@@ -84,6 +102,172 @@ def get_degraded():
 
 def clear_degraded():
     _DEGRADED.clear()
+
+
+# ---------------------------------------------------------------------------
+# 数据缓存（可选，默认关闭）
+# 设计要点（数据同步）：
+#   1) 仅在 live 取数成功时写入；空结果/降级结果默认不缓存（cache_empty=False）。
+#   2) TTL 到期即失效；实时行情额外按数据自身日期判活（跨日缓存不冒充今日）。
+#   3) 命中记入 _CACHE_HITS 并在输出中显式标注，绝不把缓存冒充实时。
+# ---------------------------------------------------------------------------
+_CACHE_ENABLED = None   # None=未初始化（首次取数时读配置/环境）
+_CACHE_TTL = 60         # 全局兜底 TTL
+_CACHE_TTL_MAP = {}     # 按数据源覆盖（kind -> 秒）
+_CACHE_HITS = []
+
+
+def _cache_settings():
+    global _CACHE_ENABLED, _CACHE_TTL, _CACHE_TTL_MAP
+    if _CACHE_ENABLED is None:
+        if os.environ.get("DINGPAN_NO_CACHE"):
+            _CACHE_ENABLED = False
+        else:
+            try:
+                cache = (load_config().get("datasource") or {}).get("cache") or {}
+            except Exception:  # noqa: BLE001
+                cache = {}
+            _CACHE_ENABLED = bool(cache.get("enabled", False))
+            try:
+                _CACHE_TTL = int(cache.get("ttl_seconds", 60))
+            except (TypeError, ValueError):
+                _CACHE_TTL = 60
+            m = cache.get("ttl")
+            _CACHE_TTL_MAP = dict(m) if isinstance(m, dict) else {}
+    return _CACHE_ENABLED, _CACHE_TTL, _CACHE_TTL_MAP
+
+
+def set_cache(enabled, ttl=None):
+    global _CACHE_ENABLED, _CACHE_TTL
+    _CACHE_ENABLED = bool(enabled)
+    if ttl is not None:
+        _CACHE_TTL = int(ttl)
+
+
+def _cache_ttl_for(kind):
+    """解析某数据源的生效 TTL：config.ttl[kind] > DEFAULT_CACHE_TTL[kind] > 全局。"""
+    _, glob, m = _cache_settings()
+    if kind and kind in m:
+        try:
+            return int(m[kind])
+        except (TypeError, ValueError):
+            pass
+    if kind and kind in DEFAULT_CACHE_TTL:
+        return DEFAULT_CACHE_TTL[kind]
+    return glob
+
+
+def is_cache_enabled():
+    return _cache_settings()[0]
+
+
+def get_cache_hits():
+    return list(_CACHE_HITS)
+
+
+def clear_cache_hits():
+    _CACHE_HITS.clear()
+
+
+def _cache_dir():
+    d = os.path.join(get_data_dir(), "cache")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _cache_file(key):
+    safe = re.sub(r"[^0-9A-Za-z_.-]", "_", key)
+    return os.path.join(_cache_dir(), safe + ".json")
+
+
+def cached(source, key, producer, ttl=None, kind=None, freshness=None, cache_empty=True):
+    """带缓存的取数包装：命中 TTL 内且仍“新鲜”的缓存则直接复用，否则回源并落盘。
+
+    - 缓存未启用时等价于直接 producer()。
+    - kind 决定该数据源的默认 TTL（见 DEFAULT_CACHE_TTL / config.ttl）；ttl 显式覆盖。
+    - freshness(payload)->bool 按数据自身时间判活（如实时行情的日期须为当日）。
+    - cache_empty=False 时不缓存空结果，避免把降级/失败写进缓存。
+    """
+    enabled, _, _ = _cache_settings()
+    if not enabled:
+        return producer()
+    ttl = ttl if ttl is not None else _cache_ttl_for(kind)
+    p = _cache_file(key)
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                node = json.load(f)
+            age = datetime.now().timestamp() - float(node.get("ts", 0))
+            if 0 <= age <= ttl and (freshness is None or freshness(node.get("payload"))):
+                _CACHE_HITS.append({"source": source, "kind": kind, "key": key,
+                                    "age": round(age, 1), "ttl": ttl})
+                return node.get("payload")
+        except Exception:  # noqa: BLE001
+            pass
+    payload = producer()
+    if cache_empty or payload:
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"source": source, "kind": kind, "key": key, "ttl": ttl,
+                           "ts": datetime.now().timestamp(),
+                           "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "payload": payload}, f, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+    return payload
+
+
+def cache_clear():
+    d = os.path.join(get_data_dir(), "cache")
+    n = 0
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            if name.endswith(".json"):
+                try:
+                    os.remove(os.path.join(d, name))
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
+
+def cache_status():
+    d = os.path.join(get_data_dir(), "cache")
+    enabled, glob_ttl, _ = _cache_settings()
+    now = datetime.now().timestamp()
+    items = []
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    node = json.load(f)
+            except Exception:  # noqa: BLE001
+                continue
+            age = now - float(node.get("ts", 0))
+            try:
+                ttl = int(node.get("ttl", glob_ttl))
+            except (TypeError, ValueError):
+                ttl = glob_ttl
+            items.append({"source": node.get("source"), "kind": node.get("kind"),
+                          "key": node.get("key"), "time": node.get("time"),
+                          "ttl": ttl, "age": round(age, 1), "expired": age > ttl})
+    return {"enabled": enabled, "ttl_seconds": glob_ttl, "dir": d,
+            "count": len(items), "items": items}
+
+
+def cache_note():
+    """把本次运行命中缓存的情况汇总成一行；无命中返回 None。"""
+    if not _CACHE_HITS:
+        return None
+    uniq, seen = [], set()
+    for h in _CACHE_HITS:
+        if h["key"] not in seen:
+            seen.add(h["key"])
+            uniq.append(h)
+    return ("⚡ 命中数据缓存 %d 项（TTL 内复用，非强制刷新；如需最新请 "
+            "run.py cache clear 后重跑）" % len(uniq))
 
 
 def set_data_dir(path):
@@ -125,7 +309,7 @@ def _deep_update(base, patch):
 def default_config():
     return {
         "account": {"total_capital": 0},
-        "datasource": {"mode": "live"},
+        "datasource": {"mode": "live", "cache": copy.deepcopy(DEFAULT_CACHE)},
         "calendar": copy.deepcopy(CALENDAR_BASELINE),
         "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
     }
@@ -358,6 +542,423 @@ def _sample(name):
 
 
 # ---------------------------------------------------------------------------
+# 离线样例 schema / 校验 / 生成
+# 说明：assets/sample/ 是“开发者夹具”，仅供 --offline 演示与 CI 验证；
+#       普通用户不应手改 JSON —— 统一用 `run.py sample verify|gen` 生成与校验。
+# ---------------------------------------------------------------------------
+SAMPLE_FILES = ["realtime.json", "minute.json", "daily.json", "sina_spot.json",
+                "board_rank.json", "board_members.json", "sector_map.json",
+                "limit_up.json"]
+
+# 各文件字段/单位契约（供 Agent 生成与校验的共同依据）。
+SAMPLE_SCHEMA = {
+    "realtime": {"file": "realtime.json", "shape": "map",
+                 "keys": ["name", "price", "prev_close", "open", "high", "low",
+                          "pct", "amount_wan", "volume_shou", "nmc_yi", "time"],
+                 "units": {"nmc_yi": "亿", "amount_wan": "万元",
+                           "volume_shou": "手", "time": "YYYYMMDDHHMMSS"}},
+    "minute": {"file": "minute.json", "shape": "map",
+               "row": "HHMM price volume avg"},
+    "daily": {"file": "daily.json", "shape": "map",
+              "row": ["date", "open", "close", "high", "low", "volume"]},
+    "sina_spot": {"file": "sina_spot.json", "shape": "list",
+                  "keys": ["symbol", "code", "name", "trade", "changepercent",
+                           "nmc", "open", "high", "low", "settlement", "volume",
+                           "amount"],
+                  "units": {"nmc": "万元", "amount": "元"}},
+    "board_rank": {"file": "board_rank.json", "shape": "list",
+                   "keys": ["code", "name", "pct", "amount_yi", "rank"],
+                   "units": {"amount_yi": "亿", "code": "BKxxxx"}},
+    "board_members": {"file": "board_members.json", "shape": "map",
+                      "item_keys": ["code", "name", "price", "pct"]},
+    "sector_map": {"file": "sector_map.json", "shape": "map", "value": "板块名"},
+    "limit_up": {"file": "limit_up.json", "shape": "map",
+                 "item_keys": ["code", "name"]},
+}
+
+# 生成用内置股票池（name/sector/board/base 现价基准）。
+_SAMPLE_UNIVERSE = {
+    "sh600000": {"name": "浦发银行", "sector": "银行", "board": "BK0475", "base": 10.0},
+    "sz000001": {"name": "平安银行", "sector": "银行", "board": "BK0475", "base": 8.0},
+    "sh600111": {"name": "北方稀土", "sector": "稀土永磁", "board": "BK1027", "base": 25.0},
+    "sz000002": {"name": "万科A", "sector": "房地产开发", "board": "BK0421", "base": 9.0},
+    "sh600519": {"name": "贵州茅台", "sector": "白酒", "board": "BK0477", "base": 1400.0},
+    "sh600036": {"name": "招商银行", "sector": "银行", "board": "BK0475", "base": 55.0},
+}
+_SAMPLE_DEFAULT_CODES = ["sh600000", "sz000001", "sh600111", "sz000002"]
+# 当日涨幅（用于让行情自洽：部分进候选池、部分进涨停池）。
+_SAMPLE_TODAY_PCT = {"sh600000": 4.8, "sz000001": 3.2, "sh600111": 9.9,
+                     "sz000002": -1.5, "sh600519": 3.0, "sh600036": 9.8}
+_SAMPLE_INDEX = "sh000001"
+
+
+def _rng(seed_str):
+    import random
+    seed = int(hashlib.sha256(seed_str.encode("utf-8")).hexdigest()[:16], 16)
+    return random.Random(seed)
+
+
+def _load_sample_file(name):
+    p = os.path.join(SAMPLE_DIR, name)
+    if not os.path.exists(p):
+        return None, "文件缺失"
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f), None
+    except Exception as e:  # noqa: BLE001
+        return None, "解析失败: %s" % e
+
+
+def _is_code(s):
+    return bool(re.match(r"^(sh|sz|bj)\d{6}$", str(s or "")))
+
+
+def sample_verify():
+    """校验离线样例：字段/单位/行序契约 + 跨文件一致性。返回结构化报告。"""
+    rep = {"ok": True, "dir": SAMPLE_DIR, "files": {}, "consistency_issues": []}
+
+    def rec(name, count, issues):
+        rep["files"][name] = {"count": count, "issues": issues}
+        if issues:
+            rep["ok"] = False
+
+    # realtime.json
+    data, err = _load_sample_file("realtime.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for code, d in data.items():
+            if not _is_code(code):
+                issues.append("%s 代码格式异常" % code)
+            if not isinstance(d, dict):
+                issues.append("%s 结构应为对象" % code)
+                continue
+            miss = [k for k in SAMPLE_SCHEMA["realtime"]["keys"] if k not in d]
+            if miss:
+                issues.append("%s 缺字段 %s" % (code, ",".join(miss)))
+            if not re.match(r"^\d{14}$", str(d.get("time") or "")):
+                issues.append("%s time 非 YYYYMMDDHHMMSS" % code)
+    rec("realtime.json", cnt, issues)
+
+    # minute.json
+    data, err = _load_sample_file("minute.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for code, rows in data.items():
+            if not _is_code(code):
+                issues.append("%s 代码格式异常" % code)
+            if not isinstance(rows, list) or not rows:
+                issues.append("%s 分时为空" % code)
+                continue
+            for r in rows[:3]:
+                parts = str(r).split()
+                if len(parts) < 4 or not re.match(r"^\d{4}$", parts[0]):
+                    issues.append("%s 行格式应为 'HHMM price volume avg'" % code)
+                    break
+    rec("minute.json", cnt, issues)
+
+    # daily.json
+    data, err = _load_sample_file("daily.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for code, rows in data.items():
+            if not _is_code(code):
+                issues.append("%s 代码格式异常" % code)
+            if not isinstance(rows, list) or len(rows) < 20:
+                issues.append("%s 日K不足 20 根" % code)
+                continue
+            for r in rows:
+                if not isinstance(r, list) or len(r) < 6:
+                    issues.append("%s 行应为 [date,open,close,high,low,volume]" % code)
+                    break
+                if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(r[0])):
+                    issues.append("%s 日期格式异常: %s" % (code, r[0]))
+                    break
+                try:
+                    float(r[1]), float(r[2]), float(r[3]), float(r[4])
+                except (TypeError, ValueError):
+                    issues.append("%s 存在非数值行情" % code)
+                    break
+    rec("daily.json", cnt, issues)
+
+    # sina_spot.json
+    data, err = _load_sample_file("sina_spot.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        if not isinstance(data, list):
+            issues.append("结构应为数组")
+        else:
+            cnt = len(data)
+            for d in data:
+                miss = [k for k in SAMPLE_SCHEMA["sina_spot"]["keys"] if k not in d]
+                if miss:
+                    issues.append("%s 缺字段 %s" % (d.get("symbol"), ",".join(miss)))
+                try:
+                    float(d.get("trade")), float(d.get("changepercent")), float(d.get("nmc"))
+                except (TypeError, ValueError):
+                    issues.append("%s 行情字段非数值" % d.get("symbol"))
+    rec("sina_spot.json", cnt, issues)
+
+    # board_rank.json
+    data, err = _load_sample_file("board_rank.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data) if isinstance(data, list) else 0
+        if not isinstance(data, list):
+            issues.append("结构应为数组")
+        else:
+            for d in data:
+                miss = [k for k in SAMPLE_SCHEMA["board_rank"]["keys"] if k not in d]
+                if miss:
+                    issues.append("%s 缺字段 %s" % (d.get("code"), ",".join(miss)))
+    rec("board_rank.json", cnt, issues)
+
+    # board_members.json
+    data, err = _load_sample_file("board_members.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for bcode, members in data.items():
+            if not isinstance(members, list):
+                issues.append("%s 结构应为数组" % bcode)
+                continue
+            for m in members:
+                miss = [k for k in SAMPLE_SCHEMA["board_members"]["item_keys"] if k not in m]
+                if miss:
+                    issues.append("%s/%s 缺字段 %s"
+                                  % (bcode, m.get("code"), ",".join(miss)))
+    rec("board_members.json", cnt, issues)
+
+    # sector_map.json
+    data, err = _load_sample_file("sector_map.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for code, sec in data.items():
+            if not _is_code(code):
+                issues.append("%s 代码格式异常" % code)
+            if not isinstance(sec, str) or not sec:
+                issues.append("%s 板块名缺失" % code)
+    rec("sector_map.json", cnt, issues)
+
+    # limit_up.json
+    data, err = _load_sample_file("limit_up.json")
+    issues, cnt = [], 0
+    if err:
+        issues.append(err)
+    else:
+        cnt = len(data)
+        for key, rows in data.items():
+            if not isinstance(rows, list):
+                issues.append("%s 结构应为数组" % key)
+                continue
+            for x in rows:
+                miss = [k for k in SAMPLE_SCHEMA["limit_up"]["item_keys"] if k not in x]
+                if miss:
+                    issues.append("%s/%s 缺字段 %s" % (key, x.get("code"), ",".join(miss)))
+    rec("limit_up.json", cnt, issues)
+
+    # ---- 跨文件一致性 ----
+    ci = rep["consistency_issues"]
+    rt = {}
+    data, _ = _load_sample_file("realtime.json")
+    if isinstance(data, dict):
+        for code, d in data.items():
+            if isinstance(d, dict):
+                rt[normalize_code(code)] = (float(d.get("price") or 0),
+                                            float(d.get("pct") or 0),
+                                            float(d.get("nmc_yi") or 0))
+    spot = {}
+    data, _ = _load_sample_file("sina_spot.json")
+    if isinstance(data, list):
+        for d in data:
+            try:
+                spot[normalize_code(d.get("symbol") or d.get("code"))] = (
+                    float(d.get("trade") or 0), float(d.get("changepercent") or 0),
+                    float(d.get("nmc") or 0) / 1e4)
+            except (TypeError, ValueError):
+                continue
+    members = {}
+    data, _ = _load_sample_file("board_members.json")
+    if isinstance(data, dict):
+        for members_list in data.values():
+            for m in members_list or []:
+                try:
+                    members[normalize_code(m.get("code"))] = (
+                        float(m.get("price") or 0), float(m.get("pct") or 0))
+                except (TypeError, ValueError):
+                    continue
+    for code in sorted(set(rt) & set(spot)):
+        (p1, c1, n1), (p2, c2, n2) = rt[code], spot[code]
+        if abs(p1 - p2) > 0.02:
+            ci.append("%s 价格不一致：realtime %.2f vs sina_spot %.2f" % (code, p1, p2))
+        if abs(c1 - c2) > 0.2:
+            ci.append("%s 涨幅不一致：realtime %.2f%% vs sina_spot %.2f%%" % (code, c1, c2))
+        if abs(n1 - n2) > max(1.0, abs(n1) * 0.05):
+            ci.append("%s 流通市值不一致：realtime %.1f亿 vs sina_spot %.1f亿"
+                      % (code, n1, n2))
+    for code in sorted(set(rt) & set(members)):
+        (p1, c1, _), (p2, c2) = rt[code], members[code]
+        if abs(p1 - p2) > 0.02:
+            ci.append("%s 价格不一致：realtime %.2f vs board_members %.2f" % (code, p1, p2))
+        if abs(c1 - c2) > 0.2:
+            ci.append("%s 涨幅不一致：realtime %.2f%% vs board_members %.2f%%" % (code, c1, c2))
+    data, _ = _load_sample_file("limit_up.json")
+    if isinstance(data, dict):
+        for rows in data.values():
+            for x in rows or []:
+                code = normalize_code(x.get("code"))
+                if code in rt and rt[code][1] < 9.5:
+                    ci.append("%s 在涨停池但涨幅仅 %.2f%%，与涨停语义不符" % (code, rt[code][1]))
+    if ci:
+        rep["ok"] = False
+    return rep
+
+
+def _weekdays_before(date_str, n):
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    out = []
+    while len(out) < n:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y-%m-%d"))
+    return list(reversed(out))
+
+
+def _gen_daily_rows(code, base, end_date, days=120):
+    rng = _rng(code + "-daily")
+    prev_close = base / (1 + _SAMPLE_TODAY_PCT.get(code, 3.0) / 100.0)
+    closes, level = [], prev_close * 0.85
+    for _ in range(days):
+        level *= (1 + 0.0015) * (1 + rng.uniform(-0.008, 0.010))
+        closes.append(level)
+    if code.endswith("600111"):          # 高标：近端连板，供涨停记忆/情绪演示
+        c = closes[-4]
+        for k in (3, 2, 1):
+            c = c * 1.099
+            closes[-k] = c
+    scale = prev_close / closes[-1]
+    closes = [round(c * scale, 2) for c in closes]
+    rows, prev = [], closes[0]
+    for dt, c in zip(_weekdays_before(end_date, days), closes):
+        o = round(prev * (1 + rng.uniform(-0.005, 0.005)), 2)
+        h = round(max(o, c) * (1 + rng.uniform(0, 0.010)), 2)
+        l = round(min(o, c) * (1 - rng.uniform(0, 0.010)), 2)
+        rows.append([dt, "%.2f" % o, "%.2f" % c, "%.2f" % h,
+                     "%.2f" % l, str(int(rng.uniform(80000, 160000)))])
+        prev = c
+    return rows
+
+
+def _gen_minute(code, open_, high, price):
+    rng = _rng(code + "-minute")
+    rows, mid, mins = [], 40, 61
+    for i in range(mins):
+        t = 9 * 60 + 30 + i
+        if i <= mid:
+            p = open_ + (high - open_) * ((i / mid) ** 0.8)
+        else:
+            p = high - (high - price) * ((i - mid) / (mins - 1 - mid))
+        p = round(p, 2)
+        rows.append("%02d%02d %.2f %d %.3f"
+                    % (t // 60, t % 60, p, int(rng.uniform(2000, 5000)), p))
+    return rows
+
+
+def sample_gen(codes=None, date_str=None):
+    """按 schema 生成一套自洽的离线样例（确定性、无需联网），覆盖跨文件一致性。"""
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    datetime.strptime(date_str, "%Y-%m-%d")  # 校验格式
+    codes = [normalize_code(c) for c in (codes or _SAMPLE_DEFAULT_CODES)]
+
+    realtime, minute, daily = {}, {}, {}
+    spot, sector_map, members = [], {}, {}
+    board_pct = {}
+
+    # 指数日K（红绿灯需要 >=20 根）
+    daily[_SAMPLE_INDEX] = _gen_daily_rows(
+        _SAMPLE_INDEX, 3100.0, date_str, days=120)
+
+    for code in codes:
+        uni = _SAMPLE_UNIVERSE.get(code, {})
+        name = uni.get("name") or ("样例%s" % code[2:])
+        sector = uni.get("sector") or "综合"
+        board = uni.get("board") or "BK0000"
+        base = uni.get("base") or 10.0
+        rows = _gen_daily_rows(code, base, date_str)
+        daily[code] = rows
+        prev_close = float(rows[-1][2])
+        pct = round(_SAMPLE_TODAY_PCT.get(code, 3.0), 2)
+        rng = _rng(code + "-rt")
+        price = round(prev_close * (1 + pct / 100.0), 2)
+        open_ = round(prev_close * (1 + rng.uniform(-0.010, 0.010)), 2)
+        high = round(max(open_, price) * (1 + rng.uniform(0, 0.008)), 2)
+        low = round(min(open_, price) * (1 - rng.uniform(0, 0.008)), 2)
+        nmc_yi = round(rng.uniform(60, 360), 1)
+        amount_wan = round(rng.uniform(20000, 60000), 1)
+        volume_shou = int(rng.uniform(100000, 600000))
+        realtime[code] = {
+            "name": name, "price": price, "prev_close": prev_close, "open": open_,
+            "high": high, "low": low, "pct": pct, "amount_wan": amount_wan,
+            "volume_shou": volume_shou, "nmc_yi": nmc_yi,
+            "time": date_str.replace("-", "") + "103000"}
+        minute[code] = _gen_minute(code, open_, high, price)
+        spot.append({"symbol": code, "code": code[2:], "name": name,
+                     "trade": "%.2f" % price, "changepercent": "%.2f" % pct,
+                     "nmc": "%.0f" % (nmc_yi * 1e4), "open": "%.2f" % open_,
+                     "high": "%.2f" % high, "low": "%.2f" % low,
+                     "settlement": "%.2f" % prev_close,
+                     "volume": str(volume_shou), "amount": "%.0f" % (amount_wan * 1e4)})
+        sector_map[code] = sector
+        members.setdefault(board, []).append(
+            {"code": code, "name": name, "price": price, "pct": pct})
+        board_pct.setdefault(board, []).append(pct)
+
+    board_names = {v.get("board"): v.get("sector")
+                   for v in _SAMPLE_UNIVERSE.values()}
+    board_rank = []
+    for bcode, pcts in board_pct.items():
+        board_rank.append({"code": bcode, "name": board_names.get(bcode) or "综合",
+                           "pct": round(sum(pcts) / len(pcts), 2),
+                           "amount_yi": round(60 + 20 * len(pcts), 1), "rank": 0})
+    board_rank.sort(key=lambda b: b["pct"], reverse=True)
+    for i, b in enumerate(board_rank, 1):
+        b["rank"] = i
+
+    limit_up = {"today": [{"code": c, "name": realtime[c]["name"]}
+                          for c in codes if realtime[c]["pct"] >= 9.5]}
+
+    payloads = {
+        "realtime.json": realtime, "minute.json": minute, "daily.json": daily,
+        "sina_spot.json": spot, "board_rank.json": board_rank,
+        "board_members.json": members, "sector_map.json": sector_map,
+        "limit_up.json": limit_up,
+    }
+    for name, payload in payloads.items():
+        with open(os.path.join(SAMPLE_DIR, name), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+
+    return {"date": date_str, "codes": codes, "files": list(payloads),
+            "limit_up_count": len(limit_up["today"])}
+
+
+# ---------------------------------------------------------------------------
 # 行情取数
 # ---------------------------------------------------------------------------
 def fetch_realtime(code):
@@ -369,22 +970,27 @@ def fetch_realtime(code):
         d = dict(data[c])
         d["code"] = c
         return d
-    txt = http_get("http://qt.gtimg.cn/q=" + c, encoding="gbk")
-    m = re.search(r'="(.*)"', txt)
-    if not m:
-        raise RuntimeError("行情解析失败: %s" % txt[:80])
-    f = m.group(1).split("~")
 
-    def num(i):
-        try:
-            return float(f[i])
-        except (IndexError, ValueError):
-            return 0.0
-    return {"code": c, "name": f[1] if len(f) > 1 else c,
-            "price": num(3), "prev_close": num(4), "open": num(5),
-            "high": num(33), "low": num(34), "pct": num(32),
-            "amount_wan": num(37), "volume_shou": num(36), "nmc_yi": num(44),
-            "time": f[30] if len(f) > 30 else ""}
+    def _do():
+        txt = http_get("http://qt.gtimg.cn/q=" + c, encoding="gbk")
+        m = re.search(r'="(.*)"', txt)
+        if not m:
+            raise RuntimeError("行情解析失败: %s" % txt[:80])
+        f = m.group(1).split("~")
+
+        def num(i):
+            try:
+                return float(f[i])
+            except (IndexError, ValueError):
+                return 0.0
+        return {"code": c, "name": f[1] if len(f) > 1 else c,
+                "price": num(3), "prev_close": num(4), "open": num(5),
+                "high": num(33), "low": num(34), "pct": num(32),
+                "amount_wan": num(37), "volume_shou": num(36), "nmc_yi": num(44),
+                "time": f[30] if len(f) > 30 else ""}
+    # 实时行情按数据自身日期判活：跨日缓存不得冒充今日。
+    return cached("腾讯实时", "realtime_%s" % c, _do, kind="realtime",
+                  freshness=lambda d: _rt_date(d) == datetime.now().strftime("%Y-%m-%d"))
 
 
 def fetch_minute(code):
@@ -396,10 +1002,12 @@ def fetch_minute(code):
             raise RuntimeError("离线样例无 %s 分时" % c)
         rows = data[c]
     else:
-        txt = http_get("http://web.ifzq.gtimg.cn/appstock/app/minute/query?code=" + c)
-        js = json.loads(txt)
-        node = js.get("data", {}).get(c, {})
-        rows = node.get("data", {}).get("data", [])
+        def _do():
+            txt = http_get("http://web.ifzq.gtimg.cn/appstock/app/minute/query?code=" + c)
+            js = json.loads(txt)
+            node = js.get("data", {}).get(c, {})
+            return node.get("data", {}).get("data", [])
+        rows = cached("腾讯分时", "minute_%s" % c, _do, kind="minute")
     out = []
     for r in rows:
         if isinstance(r, str):
@@ -424,11 +1032,13 @@ def fetch_daily(code, count=120):
         data = _sample("daily.json")
         rows = data.get(c, [])
     else:
-        url = ("http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=%s,day,,,%d,qfq"
-               % (c, count))
-        js = json.loads(http_get(url))
-        node = js.get("data", {}).get(c, {})
-        rows = node.get("qfqday") or node.get("day") or []
+        def _do():
+            url = ("http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=%s,day,,,%d,qfq"
+                   % (c, count))
+            js = json.loads(http_get(url))
+            node = js.get("data", {}).get(c, {})
+            return node.get("qfqday") or node.get("day") or []
+        rows = cached("腾讯日K", "daily_%s_%d" % (c, count), _do, kind="daily")
     out = []
     for r in rows:
         if isinstance(r, str):
@@ -480,42 +1090,49 @@ def fetch_sina_spot_all(pages=6, num=100, sort="changepercent"):
     """新浪全市场快照，返回原始 dict 列表（含 nmc 万元、changepercent 等）。"""
     if _OFFLINE:
         return _sample("sina_spot.json")
-    rows = []
-    for pg in range(1, pages + 1):
-        url = ("http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-               "Market_Center.getHQNodeData?page=%d&num=%d&sort=%s&asc=0&node=hs_a"
-               "&symbol=&_s_r_a=page" % (pg, num, sort))
-        txt = http_get(url, encoding="gbk").strip()
-        if not txt or txt == "null":
-            break
-        try:
-            arr = json.loads(txt)
-        except ValueError:
-            break
-        if not arr:
-            break
-        rows.extend(arr)
-    return rows
+
+    def _do():
+        rows = []
+        for pg in range(1, pages + 1):
+            url = ("http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                   "Market_Center.getHQNodeData?page=%d&num=%d&sort=%s&asc=0&node=hs_a"
+                   "&symbol=&_s_r_a=page" % (pg, num, sort))
+            txt = http_get(url, encoding="gbk").strip()
+            if not txt or txt == "null":
+                break
+            try:
+                arr = json.loads(txt)
+            except ValueError:
+                break
+            if not arr:
+                break
+            rows.extend(arr)
+        return rows
+    return cached("新浪快照", "sina_spot_%d_%d_%s" % (pages, num, sort), _do,
+                  kind="sina_spot")
 
 
 def fetch_board_rank(limit=80):
     """东方财富行业板块排行。返回 [{code,name,pct,amount_yi,rank}]。"""
     if _OFFLINE:
         return _sample("board_rank.json")
-    url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
-           "&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f3,f6" % limit)
-    js = json.loads(http_get(url))
-    diffs = (js.get("data") or {}).get("diff") or []
-    out = []
-    for i, d in enumerate(diffs):
-        try:
-            pct = float(d.get("f3") if d.get("f3") is not None else 0)
-            amt = float(d.get("f6") if d.get("f6") is not None else 0) / 1e8
-        except (TypeError, ValueError):
-            pct, amt = 0.0, 0.0
-        out.append({"code": d.get("f12"), "name": d.get("f14"),
-                    "pct": pct, "amount_yi": amt, "rank": i + 1})
-    return out
+
+    def _do():
+        url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
+               "&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f3,f6" % limit)
+        js = json.loads(http_get(url))
+        diffs = (js.get("data") or {}).get("diff") or []
+        out = []
+        for i, d in enumerate(diffs):
+            try:
+                pct = float(d.get("f3") if d.get("f3") is not None else 0)
+                amt = float(d.get("f6") if d.get("f6") is not None else 0) / 1e8
+            except (TypeError, ValueError):
+                pct, amt = 0.0, 0.0
+            out.append({"code": d.get("f12"), "name": d.get("f14"),
+                        "pct": pct, "amount_yi": amt, "rank": i + 1})
+        return out
+    return cached("东财板块排行", "board_rank_%d" % limit, _do, kind="board_rank")
 
 
 def fetch_limit_up_pool(date_str=None):
@@ -523,55 +1140,68 @@ def fetch_limit_up_pool(date_str=None):
     if _OFFLINE:
         return _sample("limit_up.json").get(date_str or "today", [])
     d = date_str or datetime.now().strftime("%Y%m%d")
-    try:
-        url = ("http://push2ex.eastmoney.com/getTopicZTPool"
-               "?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt"
-               "&Pageindex=0&pagesize=180&sort=fbt:asc&date=%s" % d)
-        js = json.loads(http_get(url))
-        pool = ((js.get("data") or {}).get("pool")) or []
-        return [{"code": normalize_code(str(x.get("c", ""))), "name": x.get("n", "")}
-                for x in pool]
-    except Exception as e:  # noqa: BLE001
-        note_degraded("东财涨停池", e)
-        return []
+
+    def _do():
+        try:
+            url = ("http://push2ex.eastmoney.com/getTopicZTPool"
+                   "?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt"
+                   "&Pageindex=0&pagesize=180&sort=fbt:asc&date=%s" % d)
+            js = json.loads(http_get(url))
+            pool = ((js.get("data") or {}).get("pool")) or []
+            return [{"code": normalize_code(str(x.get("c", ""))), "name": x.get("n", "")}
+                    for x in pool]
+        except Exception as e:  # noqa: BLE001
+            note_degraded("东财涨停池", e)
+            return []
+    # 空池多为降级结果，不写入缓存（cache_empty=False）。
+    return cached("东财涨停池", "limit_up_%s" % d, _do, kind="limit_up", cache_empty=False)
 
 
 def fetch_stock_sector(code):
     """东方财富个股所属行业板块名；接口不可用时显式降级并返回 None（由 Agent 用业务知识回填）。"""
+    c = normalize_code(code)
     if _OFFLINE:
-        return _sample("sector_map.json").get(normalize_code(code))
-    try:
-        url = ("http://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=f127"
-               % em_secid(code))
-        js = json.loads(http_get(url))
-        return (js.get("data") or {}).get("f127")
-    except Exception as e:  # noqa: BLE001
-        note_degraded("东财个股板块", e)
-        return None
+        return _sample("sector_map.json").get(c)
+
+    def _do():
+        try:
+            url = ("http://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=f127"
+                   % em_secid(code))
+            js = json.loads(http_get(url))
+            return (js.get("data") or {}).get("f127")
+        except Exception as e:  # noqa: BLE001
+            note_degraded("东财个股板块", e)
+            return None
+    return cached("东财个股板块", "sector_%s" % c, _do, kind="sector", cache_empty=False)
 
 
 def fetch_board_members(board_code, limit=400):
     """东方财富板块成分股。返回 [{code,name,price,pct}]；接口不可用时显式降级并返回 []。"""
     if _OFFLINE:
         return _sample("board_members.json").get(board_code, [])
-    try:
-        url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
-               "&fltt=2&invt=2&fid=f3&fs=b:%s&fields=f2,f3,f12,f14" % (limit, board_code))
-        js = json.loads(http_get(url))
-    except Exception as e:  # noqa: BLE001
-        note_degraded("东财板块成分股", e)
-        return []
-    diffs = (js.get("data") or {}).get("diff") or []
-    out = []
-    for d in diffs:
+
+    def _do():
         try:
-            price = float(d.get("f2") or 0)
-            pct = float(d.get("f3") or 0)
-        except (TypeError, ValueError):
-            continue
-        out.append({"code": normalize_code(str(d.get("f12") or "")),
-                    "name": d.get("f14"), "price": price, "pct": pct})
-    return out
+            url = ("http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1"
+                   "&fltt=2&invt=2&fid=f3&fs=b:%s&fields=f2,f3,f12,f14"
+                   % (limit, board_code))
+            js = json.loads(http_get(url))
+        except Exception as e:  # noqa: BLE001
+            note_degraded("东财板块成分股", e)
+            return []
+        diffs = (js.get("data") or {}).get("diff") or []
+        out = []
+        for d in diffs:
+            try:
+                price = float(d.get("f2") or 0)
+                pct = float(d.get("f3") or 0)
+            except (TypeError, ValueError):
+                continue
+            out.append({"code": normalize_code(str(d.get("f12") or "")),
+                        "name": d.get("f14"), "price": price, "pct": pct})
+        return out
+    return cached("东财板块成分股", "board_members_%s_%d" % (board_code, limit), _do,
+                  kind="board_members", cache_empty=False)
 
 
 def resolve_board_code(sector, boards=None):

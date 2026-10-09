@@ -166,6 +166,16 @@ python scripts/run.py pool set 600519 白酒
 python scripts/run.py calendar show
 python scripts/run.py calendar set holidays='["2027-01-01"]' coverage_to='2027-12-31' source='上交所'
 
+# 数据缓存（默认关闭；开启以加速同一时段内的二次响应）
+python scripts/run.py config set datasource.cache.enabled=true
+python scripts/run.py config set datasource.cache.ttl_seconds=60
+python scripts/run.py cache show
+python scripts/run.py cache clear
+
+# 离线样例（开发者夹具：校验/生成，替代手改 JSON）
+python scripts/run.py sample verify
+python scripts/run.py sample gen --codes 600000,000001 --date 2026-10-08
+
 # 查看
 python scripts/run.py config show
 python scripts/run.py positions list
@@ -180,7 +190,9 @@ python scripts/run.py pool
 - `output/` 主要文件：`候选池.txt`、`config.json`、`positions.json`、`主线存档.json`。
 - 阈值全部来自 `docs/定盘实时任务_公式清单.md`，可在 `config.json` 的 `thresholds` 中覆盖，无需改代码；速查见 [references/formulas.md](references/formulas.md)。
 - **交易日历**存于 `config.json` 的 `calendar`（`holidays` / `coverage_to` / `generated_at` / `source` / `lead_days`），内置 2026 年沪深北休市安排基线；覆盖期临期（默认 30 天）或到期时各阶段会输出刷新指引，由 Agent 联网搜索下一期后 `calendar set` 落库。
-- **数据源**：仅腾讯/新浪/东财直连；接口不可用时输出「⚠️ 数据源降级」并在 `--json` 的 `degraded` 字段透出，**暂不缓存**，不以旧数据冒充实时。
+- **数据源**：仅腾讯/新浪/东财直连；接口不可用时输出「⚠️ 数据源降级」并在 `--json` 的 `degraded` 字段透出，**默认不缓存**，不以旧数据冒充实时。
+- **可选数据缓存（默认关闭）**：`config.json` 的 `datasource.cache` 开启后，同一时段内重复取数直接复用落盘结果以加速二次响应；命中会在文本输出与 `--json` 的 `cache` 字段显式标注「⚡ 命中数据缓存」，TTL 到期或跨日实时行情自动回源，绝不冒充实时。**TTL 按数据源差异化**（行情 60s、板块 120s、日K/涨停池 300s、板块归属 600s），可用 `datasource.cache.ttl`（如 `{"daily":600}`）逐项覆盖，`datasource.cache.ttl_seconds` 为全局兜底。管理：`run.py cache show|clear`。
+- **离线样例**：`assets/sample/` 是开发者夹具（非用户配置项，仅供 `--offline` 演示与验证）。由 `run.py sample gen` 一键生成、`run.py sample verify` 校验字段契约与跨文件一致性，替代手工编辑 JSON。
 - **盘中取数**：盘中把当日实时拼接为日 K 末根，`trend_ok` 的 MA5今/MA5昨/zt5 与「首阴」据此取数；「首阴」的「昨日涨幅」取上一根完整日 K。
 - **同板块判定**：候选池缺板块列时自动用东财个股板块补齐；「后排/板块回流」优先检索东财板块成分股，不可用时回退候选池同板块列。
 

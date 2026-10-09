@@ -1,44 +1,23 @@
 [
  {
-  "code": "BK0475",
-  "name": "银行",
-  "pct": 1.2,
-  "amount_yi": 210.0,
+  "code": "BK1027",
+  "name": "稀土永磁",
+  "pct": 9.9,
+  "amount_yi": 80,
   "rank": 1
  },
  {
-  "code": "BK0473",
-  "name": "证券",
-  "pct": 0.9,
-  "amount_yi": 165.0,
+  "code": "BK0475",
+  "name": "银行",
+  "pct": 4.0,
+  "amount_yi": 100,
   "rank": 2
- },
- {
-  "code": "BK1036",
-  "name": "半导体",
-  "pct": 0.7,
-  "amount_yi": 120.0,
-  "rank": 3
  },
  {
   "code": "BK0421",
   "name": "房地产开发",
-  "pct": 0.4,
-  "amount_yi": 90.0,
-  "rank": 4
- },
- {
-  "code": "BK0478",
-  "name": "保险",
-  "pct": 0.3,
-  "amount_yi": 60.0,
-  "rank": 5
- },
- {
-  "code": "BK0490",
-  "name": "电力行业",
-  "pct": 0.1,
-  "amount_yi": 45.0,
-  "rank": 6
+  "pct": -1.5,
+  "amount_yi": 80,
+  "rank": 3
  }
 ]

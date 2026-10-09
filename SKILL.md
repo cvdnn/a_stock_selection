@@ -63,8 +63,10 @@ python scripts/run.py auto     # 按当前时段自动分流
 
 - 仅 **腾讯 / 新浪 / 东财** 直连（腾讯：实时/分时/日K；新浪：全市场快照/流通市值；东财：板块排行/成分股/个股板块/涨停池）。
 - **盘中「今日」取数**：盘中以 `common.splice_today` 把当日实时拼接为日 K 末根，`trend_ok`（MA5今/昨、zt5、MA10）与「首阴」据此取数；「首阴」的「昨日涨幅」自动取上一根完整日 K。
-- 接口不可用时**显式降级**：输出"⚠️ 数据源降级：<来源>（<原因>）"，`--json` 的 `degraded` 字段透出；**暂不缓存**，不以任何旧数据冒充实时。
+- 接口不可用时**显式降级**：输出"⚠️ 数据源降级：<来源>（<原因>）"，`--json` 的 `degraded` 字段透出；**默认不缓存**，不以任何旧数据冒充实时（可选缓存见下）。
 - `--offline` 仅用于演示与验证，读取 `assets/sample/` 样例，非实时缓存。
+- **可选数据缓存（默认关闭）**：开启后同一时段内重复取数直接复用落盘结果以加速二次响应；命中显式标注「⚡ 命中数据缓存」，TTL 到期或跨日实时行情自动回源，**绝不冒充实时**。启用：`run.py config set datasource.cache.enabled=true`；**TTL 按数据源差异化**（行情 60s、板块 120s、日K/涨停池 300s、板块归属 600s），可用 `datasource.cache.ttl`（如 `'{"daily":600}'`）逐项覆盖，`datasource.cache.ttl_seconds` 为全局兜底；查看/清空：`run.py cache show|clear`。
+- **离线样例是开发者夹具**：`assets/sample/` 由 `run.py sample gen` 生成、`run.py sample verify` 校验（字段契约 + 跨文件一致性），普通用户无需手改 JSON。
 
 ## 参数缺失时先问用户
 
