@@ -30,7 +30,8 @@ a_stock_selection/
 │   ├── preopen.py           # 竞价选股内核
 │   ├── watch.py             # 盘中盯盘内核
 │   ├── daily.py             # 收盘复盘内核
-│   └── run.py               # 统一入口（时段分流 + 参数收集）
+│   ├── run.py               # 统一入口（时段分流 + 参数收集）
+│   └── uninstall.py         # 卸载还原（安装逆向，默认 dry-run）
 ├── references/formulas.md   # 公式与阈值速查
 ├── assets/                  # 配置/持仓/候选池示例 + sample 离线样例
 ├── bin/                     # 启动器 a_stock_selection(.ps1/.cmd)
@@ -167,6 +168,19 @@ python scripts/run.py selfcheck --baseline /path/to/环境清单.md    # 追加�
 ```
 
 > 说明：技能自包含、使用相对路径定位自身，复制到任何位置都能运行；WorkBuddy 以 `SKILL.md` 所在目录名作为技能名，故安装后技能目录名应与 `SKILL.md` 的 `name`（`a-stock-selection`）一致（工程仓库名 `a_stock_selection` 不变）。
+
+### 卸载与还原（安装逆向）
+
+把环境还原到安装前：卸载技能本体 → 还原定时任务 → 恢复用户旧系统 → 回滚配置与数据偏离。全程零硬删（一律移入回收站），**默认预演**，执行需 `--apply --yes` 双确认，重复执行安全，**原备份点保留不删**。
+
+```bash
+python scripts/uninstall.py --scan  --json  # 只读：发现用户实际【安装评估报告_*.md】并与 docs/cw_setup_info.md 比对差异，以实际报告驱动还原
+python scripts/uninstall.py --plan          # 预演，不改动任何文件
+python scripts/uninstall.py --apply --yes   # 执行（路径默认按实际报告解析值，可用参数覆盖）
+```
+
+> 定时任务由平台调度，脚本只产出 `schedule_actions`（删除新任务 / 按 `--old-task-spec` 重建原任务），由 Agent 执行。
+> 让 AI 代还原：见 [docs/交付设计_AI代还原.md](docs/交付设计_AI代还原.md)（含指令模板）；方案见 [docs/卸载还原方案_安装逆向.md](docs/卸载还原方案_安装逆向.md)。
 
 ## 五、使用方式
 
